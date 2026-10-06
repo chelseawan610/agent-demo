@@ -1,0 +1,148 @@
+{
+  "created_at": "2026-09-26T08:01:35.694100+00:00",
+  "case_count": 5,
+  "split": "heldout",
+  "models": [
+    {
+      "model": "deepseek/deepseek-v4.1-flash",
+      "passed": 5,
+      "total": 5,
+      "pass_rate": 1.0,
+      "cases": [
+        {
+          "name": "heldout_guide_with_preferences_zh",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": null,
+            "destination": "Paris",
+            "start_date": null,
+            "return_date": null,
+            "days": 5,
+            "nights": null,
+            "budget": null,
+            "preferences": [
+              "美术馆",
+              "咖啡馆"
+            ],
+            "preference_details": [
+              {
+                "label": "美术馆",
+                "search_query": "art museums in Paris",
+                "kind": "place"
+              },
+              {
+                "label": "咖啡馆",
+                "search_query": "cafes in Paris",
+                "kind": "food"
+              }
+            ],
+            "missing_fields": []
+          },
+          "elapsed_ms": 3846.28
+        },
+        {
+          "name": "heldout_flights_only_en",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights"
+            ],
+            "status": "ready",
+            "origin": "Beijing",
+            "destination": "Singapore",
+            "start_date": "2026-11-08",
+            "return_date": null,
+            "days": null,
+            "nights": null,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 2375.91
+        },
+        {
+          "name": "heldout_hotels_only_zh",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "hotels"
+            ],
+            "status": "ready",
+            "origin": "Guangzhou",
+            "destination": "Bangkok",
+            "start_date": "2026-12-12",
+            "return_date": null,
+            "days": null,
+            "nights": 3,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 3034.53
+        },
+        {
+          "name": "heldout_budget_per_day",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": "Hangzhou",
+            "destination": "Taipei",
+            "start_date": "2026-11-20",
+            "return_date": null,
+            "days": 4,
+            "nights": null,
+            "budget": {
+              "amount": 2000.0,
+              "currency": "CNY",
+              "level": null,
+              "period": "per_day"
+            },
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 1559.37
+        },
+        {
+          "name": "heldout_missing_flight_date",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights"
+            ],
+            "status": "needs_clarification",
+            "origin": "Guangzhou",
+            "destination": "Osaka",
+            "start_date": null,
+            "return_date": null,
+            "days": null,
+            "nights": null,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": [
+              "出发日期"
+            ]
+          },
+          "elapsed_ms": 1509.07
+        }
+      ]
+    }
+  ]
+}

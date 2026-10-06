@@ -1,0 +1,981 @@
+{
+  "created_at": "2026-09-26T07:06:14.389825+00:00",
+  "case_count": 18,
+  "models": [
+    {
+      "model": "deepseek/deepseek-v4.1-flash",
+      "passed": 18,
+      "total": 18,
+      "pass_rate": 1.0,
+      "cases": [
+        {
+          "name": "full_zh_with_budget_and_preferences",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights",
+              "hotels",
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": "Shanghai",
+            "destination": "Tokyo",
+            "start_date": "2026-10-01",
+            "return_date": null,
+            "days": 3,
+            "nights": 2,
+            "budget": {
+              "amount": 10000.0,
+              "currency": "CNY",
+              "level": null,
+              "period": "total"
+            },
+            "preferences": [
+              "东京塔",
+              "动漫"
+            ],
+            "preference_details": [
+              {
+                "label": "东京塔",
+                "search_query": "Tokyo Tower Tokyo",
+                "kind": "place"
+              },
+              {
+                "label": "动漫",
+                "search_query": "anime Tokyo",
+                "kind": "interest"
+              }
+            ],
+            "missing_fields": []
+          },
+          "elapsed_ms": 4963.34
+        },
+        {
+          "name": "full_zh_with_return_date",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights",
+              "hotels",
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": "Shanghai",
+            "destination": "Tokyo",
+            "start_date": "2026-10-01",
+            "return_date": "2026-10-04",
+            "days": 3,
+            "nights": 2,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 4293.93
+        },
+        {
+          "name": "date_dot_format",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights",
+              "hotels",
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": "Shenzhen",
+            "destination": "Hong Kong",
+            "start_date": "2026-10-03",
+            "return_date": null,
+            "days": 3,
+            "nights": 2,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 4939.47
+        },
+        {
+          "name": "full_en",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights",
+              "hotels",
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": "Shanghai",
+            "destination": "Seoul",
+            "start_date": "2026-12-03",
+            "return_date": null,
+            "days": 4,
+            "nights": 3,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 2495.11
+        },
+        {
+          "name": "guide_only_zh",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": null,
+            "destination": "Tokyo",
+            "start_date": null,
+            "return_date": null,
+            "days": 1,
+            "nights": null,
+            "budget": {
+              "amount": null,
+              "currency": "CNY",
+              "level": "medium",
+              "period": "total"
+            },
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 9560.22
+        },
+        {
+          "name": "guide_only_en",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": null,
+            "destination": "Tokyo",
+            "start_date": null,
+            "return_date": null,
+            "days": 2,
+            "nights": null,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 5702.94
+        },
+        {
+          "name": "flights_only_one_way",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights"
+            ],
+            "status": "ready",
+            "origin": "Shanghai",
+            "destination": "Tokyo",
+            "start_date": "2026-10-01",
+            "return_date": null,
+            "days": null,
+            "nights": null,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 2546.68
+        },
+        {
+          "name": "activities_only_with_places",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": null,
+            "destination": "Tokyo",
+            "start_date": null,
+            "return_date": null,
+            "days": 1,
+            "nights": null,
+            "budget": null,
+            "preferences": [
+              "东京塔",
+              "秋叶原"
+            ],
+            "preference_details": [
+              {
+                "label": "东京塔",
+                "search_query": "Tokyo Tower Tokyo",
+                "kind": "place"
+              },
+              {
+                "label": "秋叶原",
+                "search_query": "Akihabara Tokyo",
+                "kind": "place"
+              }
+            ],
+            "missing_fields": []
+          },
+          "elapsed_ms": 6419.81
+        },
+        {
+          "name": "hotels_only",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "hotels"
+            ],
+            "status": "ready",
+            "origin": null,
+            "destination": "Tokyo",
+            "start_date": "2026-11-01",
+            "return_date": null,
+            "days": null,
+            "nights": 2,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 2250.06
+        },
+        {
+          "name": "flight_already_bought",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "hotels",
+              "activities",
+              "guide"
+            ],
+            "status": "needs_clarification",
+            "origin": "Shanghai",
+            "destination": "Tokyo",
+            "start_date": null,
+            "return_date": null,
+            "days": 3,
+            "nights": 1,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": [
+              "入住日期"
+            ]
+          },
+          "elapsed_ms": 4575.82
+        },
+        {
+          "name": "hotel_and_guide_with_checkin",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "hotels",
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": null,
+            "destination": "Tokyo",
+            "start_date": "2026-11-01",
+            "return_date": null,
+            "days": null,
+            "nights": 2,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 4040.38
+        },
+        {
+          "name": "budget_level_only",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights",
+              "hotels",
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": "Shanghai",
+            "destination": "Seoul",
+            "start_date": "2026-12-01",
+            "return_date": null,
+            "days": 4,
+            "nights": 3,
+            "budget": {
+              "amount": null,
+              "currency": "CNY",
+              "level": "medium",
+              "period": "total"
+            },
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 4806.38
+        },
+        {
+          "name": "hotel_already_booked",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights",
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": "Shanghai",
+            "destination": "Tokyo",
+            "start_date": "2026-10-01",
+            "return_date": null,
+            "days": 3,
+            "nights": 2,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 2625.0
+        },
+        {
+          "name": "budget_unspecified",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights",
+              "hotels",
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": "Shanghai",
+            "destination": "Tokyo",
+            "start_date": "2026-10-01",
+            "return_date": null,
+            "days": 3,
+            "nights": 2,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 1577.83
+        },
+        {
+          "name": "bare_destination_needs_clarification",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights",
+              "hotels",
+              "activities",
+              "guide"
+            ],
+            "status": "needs_clarification",
+            "origin": null,
+            "destination": "Tokyo",
+            "start_date": null,
+            "return_date": null,
+            "days": 3,
+            "nights": 2,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": [
+              "出发城市",
+              "出发日期"
+            ]
+          },
+          "elapsed_ms": 2027.37
+        },
+        {
+          "name": "flight_request_without_date",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights"
+            ],
+            "status": "needs_clarification",
+            "origin": "Shanghai",
+            "destination": "Tokyo",
+            "start_date": null,
+            "return_date": null,
+            "days": null,
+            "nights": null,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": [
+              "出发日期"
+            ]
+          },
+          "elapsed_ms": 2622.31
+        },
+        {
+          "name": "colloquial_origin_zh",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights",
+              "hotels",
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": "Shenzhen",
+            "destination": "Hong Kong",
+            "start_date": "2026-10-03",
+            "return_date": null,
+            "days": 3,
+            "nights": 2,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 1103.11
+        },
+        {
+          "name": "colloquial_origin_en",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights",
+              "hotels",
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": "Shenzhen",
+            "destination": "Hong Kong",
+            "start_date": "2026-10-03",
+            "return_date": null,
+            "days": 3,
+            "nights": 2,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 1580.25
+        }
+      ]
+    },
+    {
+      "model": "qwen/qwen3.7-flash",
+      "passed": 18,
+      "total": 18,
+      "pass_rate": 1.0,
+      "cases": [
+        {
+          "name": "full_zh_with_budget_and_preferences",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights",
+              "hotels",
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": "Shanghai",
+            "destination": "Tokyo",
+            "start_date": "2026-10-01",
+            "return_date": null,
+            "days": 3,
+            "nights": 2,
+            "budget": {
+              "amount": 10000.0,
+              "currency": "CNY",
+              "level": null,
+              "period": "total"
+            },
+            "preferences": [
+              "东京塔",
+              "动漫"
+            ],
+            "preference_details": [
+              {
+                "label": "东京塔",
+                "search_query": "Tokyo Tower in Tokyo",
+                "kind": "place"
+              },
+              {
+                "label": "动漫",
+                "search_query": "anime culture and shops in Tokyo",
+                "kind": "interest"
+              }
+            ],
+            "missing_fields": []
+          },
+          "elapsed_ms": 4344.63
+        },
+        {
+          "name": "full_zh_with_return_date",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights",
+              "hotels",
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": "Shanghai",
+            "destination": "Tokyo",
+            "start_date": "2026-10-01",
+            "return_date": "2026-10-04",
+            "days": 3,
+            "nights": 2,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 2746.04
+        },
+        {
+          "name": "date_dot_format",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights",
+              "hotels",
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": "Shenzhen",
+            "destination": "Hong Kong",
+            "start_date": "2026-10-03",
+            "return_date": null,
+            "days": 3,
+            "nights": 2,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 2887.77
+        },
+        {
+          "name": "full_en",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights",
+              "hotels",
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": "Shanghai",
+            "destination": "Seoul",
+            "start_date": "2026-12-03",
+            "return_date": null,
+            "days": 4,
+            "nights": 3,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 3282.75
+        },
+        {
+          "name": "guide_only_zh",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": null,
+            "destination": "Tokyo",
+            "start_date": null,
+            "return_date": null,
+            "days": 1,
+            "nights": null,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 2255.03
+        },
+        {
+          "name": "guide_only_en",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": null,
+            "destination": "Tokyo",
+            "start_date": null,
+            "return_date": null,
+            "days": 2,
+            "nights": null,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 2494.68
+        },
+        {
+          "name": "flights_only_one_way",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights"
+            ],
+            "status": "ready",
+            "origin": "Shanghai",
+            "destination": "Tokyo",
+            "start_date": "2026-10-01",
+            "return_date": null,
+            "days": null,
+            "nights": null,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 3253.14
+        },
+        {
+          "name": "activities_only_with_places",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": null,
+            "destination": "Tokyo",
+            "start_date": null,
+            "return_date": null,
+            "days": 1,
+            "nights": null,
+            "budget": null,
+            "preferences": [
+              "东京塔",
+              "秋叶原"
+            ],
+            "preference_details": [
+              {
+                "label": "东京塔",
+                "search_query": "Tokyo Tower in Tokyo",
+                "kind": "place"
+              },
+              {
+                "label": "秋叶原",
+                "search_query": "Akihabara in Tokyo",
+                "kind": "place"
+              }
+            ],
+            "missing_fields": []
+          },
+          "elapsed_ms": 3478.6
+        },
+        {
+          "name": "hotels_only",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "hotels"
+            ],
+            "status": "ready",
+            "origin": null,
+            "destination": "Tokyo",
+            "start_date": "2026-11-01",
+            "return_date": null,
+            "days": null,
+            "nights": 2,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 3282.15
+        },
+        {
+          "name": "flight_already_bought",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "hotels",
+              "activities",
+              "guide"
+            ],
+            "status": "needs_clarification",
+            "origin": "Shanghai",
+            "destination": "Tokyo",
+            "start_date": null,
+            "return_date": null,
+            "days": 3,
+            "nights": 1,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": [
+              "入住日期"
+            ]
+          },
+          "elapsed_ms": 2142.28
+        },
+        {
+          "name": "hotel_and_guide_with_checkin",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "hotels",
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": null,
+            "destination": "Tokyo",
+            "start_date": "2026-11-01",
+            "return_date": null,
+            "days": null,
+            "nights": 2,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 2203.46
+        },
+        {
+          "name": "budget_level_only",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights",
+              "hotels",
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": "Shanghai",
+            "destination": "Seoul",
+            "start_date": "2026-12-01",
+            "return_date": null,
+            "days": 4,
+            "nights": 3,
+            "budget": {
+              "amount": null,
+              "currency": "CNY",
+              "level": "medium",
+              "period": null
+            },
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 3536.07
+        },
+        {
+          "name": "hotel_already_booked",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights",
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": "Shanghai",
+            "destination": "Tokyo",
+            "start_date": "2026-10-01",
+            "return_date": null,
+            "days": 3,
+            "nights": 2,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 2955.64
+        },
+        {
+          "name": "budget_unspecified",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights",
+              "hotels",
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": "Shanghai",
+            "destination": "Tokyo",
+            "start_date": "2026-10-01",
+            "return_date": null,
+            "days": 3,
+            "nights": 2,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 2651.33
+        },
+        {
+          "name": "bare_destination_needs_clarification",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights",
+              "hotels",
+              "activities",
+              "guide"
+            ],
+            "status": "needs_clarification",
+            "origin": null,
+            "destination": "Tokyo",
+            "start_date": null,
+            "return_date": null,
+            "days": 3,
+            "nights": 2,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": [
+              "出发城市",
+              "出发日期"
+            ]
+          },
+          "elapsed_ms": 2436.85
+        },
+        {
+          "name": "flight_request_without_date",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights"
+            ],
+            "status": "needs_clarification",
+            "origin": "Shanghai",
+            "destination": "Tokyo",
+            "start_date": null,
+            "return_date": null,
+            "days": null,
+            "nights": null,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": [
+              "出发日期"
+            ]
+          },
+          "elapsed_ms": 2192.87
+        },
+        {
+          "name": "colloquial_origin_zh",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights",
+              "hotels",
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": "Shenzhen",
+            "destination": "Hong Kong",
+            "start_date": "2026-10-03",
+            "return_date": null,
+            "days": 3,
+            "nights": 2,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 2626.81
+        },
+        {
+          "name": "colloquial_origin_en",
+          "passed": true,
+          "failures": [],
+          "request": {
+            "requested_services": [
+              "flights",
+              "hotels",
+              "activities",
+              "guide"
+            ],
+            "status": "ready",
+            "origin": "Shenzhen",
+            "destination": "Hong Kong",
+            "start_date": "2026-10-03",
+            "return_date": null,
+            "days": 3,
+            "nights": 2,
+            "budget": null,
+            "preferences": [],
+            "preference_details": [],
+            "missing_fields": []
+          },
+          "elapsed_ms": 2385.5
+        }
+      ]
+    }
+  ]
+}

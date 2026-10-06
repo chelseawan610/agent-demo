@@ -1,32 +1,52 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+
 [project]
-name = "deepagents-workshop"
+name = "travel-planning-agent"
 version = "0.1.0"
-description = "Add your description here"
+description = "A travel planning agent built with Microsoft Agent Framework."
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
+
 dependencies = [
-    "azure-identity>=1.25.1",
-    "deepagents==0.5.2",
-    "grandalf>=0.8",
-    "ipython>=9.6.0",
-    "langchain>=1.2,<2",
-    "langchain-anthropic>=1.0.0",
-    "langchain-aws>=1.1.0",
-    "langchain-core==1.2.28",
-    "langchain-mcp-adapters>=0.1.0",
-    "langchain-community>=0.4",
-    "langchain-google-vertexai>=3.0.3",
-    "langchain-openai>=1.1,<2",
-    "langgraph==1.1.6",
-    "langgraph-cli[inmem]>=0.4.21",
-    "langsmith>=0.7.30",
-    "notebook>=7.4.7",
-    "openai>=2.6.0",
-    "openevals>=0.1.0",
-    "protobuf>=6.33.0",
-    "python-dotenv>=1.1.1",
-    "requests>=2.32.5",
+    "agent-framework-core~=1.18.0",
+    "agent-framework-openai~=1.14.0",
+    "python-dotenv",
+    "pydantic>=2.0",
 ]
 
-[tool.setuptools]
-packages = ["agents", "utils"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+mcp = [
+    "mcp>=1.0",
+]
+rag-vector = [
+    "chromadb>=1.0",
+    "sentence-transformers>=5.0",
+]
+
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-m 'not live and not llm_live and not rag_vector'"
+markers = [
+    "live: calls public no-key APIs; run explicitly with -m live",
+    "llm_live: calls the configured LLM provider; run explicitly with -m llm_live",
+    "rag_vector: downloads and runs the local embedding model; run explicitly",
+]

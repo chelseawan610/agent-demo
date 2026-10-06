@@ -1,0 +1,86 @@
+{
+  "created_at": "2026-09-25T16:04:19.895389+00:00",
+  "case_count": 9,
+  "models": [
+    {
+      "model": "openai/gpt-6-luna",
+      "passed": 0,
+      "total": 9,
+      "pass_rate": 0.0,
+      "cases": [
+        {
+          "name": "full_zh_with_budget_and_preferences",
+          "passed": false,
+          "failures": [
+            "ChatClientException: (\"<class 'agent_framework_openai._chat_completion_client.OpenAIChatCompletionClient'> service failed to complete the prompt: Error code: 403 - {'error': {'message': 'This model is not available in your region.', 'code': 403, 'metadata': {'routing_funnel': [{'step': 'Initial Endpoints', 'endpoint_count': 7}, {'step': 'Filter by Regional Surcharge', 'endpoint_count': 4}], 'failed_routing_step': 'Gate Endpoints with Geo Restrictions'}}}\", PermissionDeniedError(\"Error code: 403 - {'error': {'message': 'This model is not available in your region.', 'code': 403, 'metadata': {'routing_funnel': [{'step': 'Initial Endpoints', 'endpoint_count': 7}, {'step': 'Filter by Regional Surcharge', 'endpoint_count': 4}], 'failed_routing_step': 'Gate Endpoints with Geo Restrictions'}}}\"))"
+          ],
+          "elapsed_ms": 2093.45
+        },
+        {
+          "name": "full_en",
+          "passed": false,
+          "failures": [
+            "ChatClientException: (\"<class 'agent_framework_openai._chat_completion_client.OpenAIChatCompletionClient'> service failed to complete the prompt: Error code: 403 - {'error': {'message': 'This model is not available in your region.', 'code': 403, 'metadata': {'routing_funnel': [{'step': 'Initial Endpoints', 'endpoint_count': 7}, {'step': 'Filter by Regional Surcharge', 'endpoint_count': 4}], 'failed_routing_step': 'Gate Endpoints with Geo Restrictions'}}}\", PermissionDeniedError(\"Error code: 403 - {'error': {'message': 'This model is not available in your region.', 'code': 403, 'metadata': {'routing_funnel': [{'step': 'Initial Endpoints', 'endpoint_count': 7}, {'step': 'Filter by Regional Surcharge', 'endpoint_count': 4}], 'failed_routing_step': 'Gate Endpoints with Geo Restrictions'}}}\"))"
+          ],
+          "elapsed_ms": 1325.21
+        },
+        {
+          "name": "guide_only_zh",
+          "passed": false,
+          "failures": [
+            "ChatClientException: (\"<class 'agent_framework_openai._chat_completion_client.OpenAIChatCompletionClient'> service failed to complete the prompt: Error code: 403 - {'error': {'message': 'This model is not available in your region.', 'code': 403, 'metadata': {'routing_funnel': [{'step': 'Initial Endpoints', 'endpoint_count': 7}, {'step': 'Filter by Regional Surcharge', 'endpoint_count': 4}], 'failed_routing_step': 'Gate Endpoints with Geo Restrictions'}}}\", PermissionDeniedError(\"Error code: 403 - {'error': {'message': 'This model is not available in your region.', 'code': 403, 'metadata': {'routing_funnel': [{'step': 'Initial Endpoints', 'endpoint_count': 7}, {'step': 'Filter by Regional Surcharge', 'endpoint_count': 4}], 'failed_routing_step': 'Gate Endpoints with Geo Restrictions'}}}\"))"
+          ],
+          "elapsed_ms": 1127.82
+        },
+        {
+          "name": "guide_only_en",
+          "passed": false,
+          "failures": [
+            "ChatClientException: (\"<class 'agent_framework_openai._chat_completion_client.OpenAIChatCompletionClient'> service failed to complete the prompt: Error code: 403 - {'error': {'message': 'This model is not available in your region.', 'code': 403, 'metadata': {'routing_funnel': [{'step': 'Initial Endpoints', 'endpoint_count': 7}, {'step': 'Filter by Regional Surcharge', 'endpoint_count': 4}], 'failed_routing_step': 'Gate Endpoints with Geo Restrictions'}}}\", PermissionDeniedError(\"Error code: 403 - {'error': {'message': 'This model is not available in your region.', 'code': 403, 'metadata': {'routing_funnel': [{'step': 'Initial Endpoints', 'endpoint_count': 7}, {'step': 'Filter by Regional Surcharge', 'endpoint_count': 4}], 'failed_routing_step': 'Gate Endpoints with Geo Restrictions'}}}\"))"
+          ],
+          "elapsed_ms": 394.88
+        },
+        {
+          "name": "flights_only_one_way",
+          "passed": false,
+          "failures": [
+            "ChatClientException: (\"<class 'agent_framework_openai._chat_completion_client.OpenAIChatCompletionClient'> service failed to complete the prompt: Error code: 403 - {'error': {'message': 'This model is not available in your region.', 'code': 403, 'metadata': {'routing_funnel': [{'step': 'Initial Endpoints', 'endpoint_count': 7}, {'step': 'Filter by Regional Surcharge', 'endpoint_count': 4}], 'failed_routing_step': 'Gate Endpoints with Geo Restrictions'}}}\", PermissionDeniedError(\"Error code: 403 - {'error': {'message': 'This model is not available in your region.', 'code': 403, 'metadata': {'routing_funnel': [{'step': 'Initial Endpoints', 'endpoint_count': 7}, {'step': 'Filter by Regional Surcharge', 'endpoint_count': 4}], 'failed_routing_step': 'Gate Endpoints with Geo Restrictions'}}}\"))"
+          ],
+          "elapsed_ms": 648.23
+        },
+        {
+          "name": "hotels_only",
+          "passed": false,
+          "failures": [
+            "ChatClientException: (\"<class 'agent_framework_openai._chat_completion_client.OpenAIChatCompletionClient'> service failed to complete the prompt: Error code: 403 - {'error': {'message': 'This model is not available in your region.', 'code': 403, 'metadata': {'routing_funnel': [{'step': 'Initial Endpoints', 'endpoint_count': 7}, {'step': 'Filter by Regional Surcharge', 'endpoint_count': 4}], 'failed_routing_step': 'Gate Endpoints with Geo Restrictions'}}}\", PermissionDeniedError(\"Error code: 403 - {'error': {'message': 'This model is not available in your region.', 'code': 403, 'metadata': {'routing_funnel': [{'step': 'Initial Endpoints', 'endpoint_count': 7}, {'step': 'Filter by Regional Surcharge', 'endpoint_count': 4}], 'failed_routing_step': 'Gate Endpoints with Geo Restrictions'}}}\"))"
+          ],
+          "elapsed_ms": 1085.02
+        },
+        {
+          "name": "flight_already_bought",
+          "passed": false,
+          "failures": [
+            "ChatClientException: (\"<class 'agent_framework_openai._chat_completion_client.OpenAIChatCompletionClient'> service failed to complete the prompt: Error code: 403 - {'error': {'message': 'This model is not available in your region.', 'code': 403, 'metadata': {'routing_funnel': [{'step': 'Initial Endpoints', 'endpoint_count': 7}, {'step': 'Filter by Regional Surcharge', 'endpoint_count': 4}], 'failed_routing_step': 'Gate Endpoints with Geo Restrictions'}}}\", PermissionDeniedError(\"Error code: 403 - {'error': {'message': 'This model is not available in your region.', 'code': 403, 'metadata': {'routing_funnel': [{'step': 'Initial Endpoints', 'endpoint_count': 7}, {'step': 'Filter by Regional Surcharge', 'endpoint_count': 4}], 'failed_routing_step': 'Gate Endpoints with Geo Restrictions'}}}\"))"
+          ],
+          "elapsed_ms": 615.35
+        },
+        {
+          "name": "budget_unspecified",
+          "passed": false,
+          "failures": [
+            "ChatClientException: (\"<class 'agent_framework_openai._chat_completion_client.OpenAIChatCompletionClient'> service failed to complete the prompt: Error code: 403 - {'error': {'message': 'This model is not available in your region.', 'code': 403, 'metadata': {'routing_funnel': [{'step': 'Initial Endpoints', 'endpoint_count': 7}, {'step': 'Filter by Regional Surcharge', 'endpoint_count': 4}], 'failed_routing_step': 'Gate Endpoints with Geo Restrictions'}}}\", PermissionDeniedError(\"Error code: 403 - {'error': {'message': 'This model is not available in your region.', 'code': 403, 'metadata': {'routing_funnel': [{'step': 'Initial Endpoints', 'endpoint_count': 7}, {'step': 'Filter by Regional Surcharge', 'endpoint_count': 4}], 'failed_routing_step': 'Gate Endpoints with Geo Restrictions'}}}\"))"
+          ],
+          "elapsed_ms": 612.03
+        },
+        {
+          "name": "bare_destination_needs_clarification",
+          "passed": false,
+          "failures": [
+            "ChatClientException: (\"<class 'agent_framework_openai._chat_completion_client.OpenAIChatCompletionClient'> service failed to complete the prompt: Error code: 403 - {'error': {'message': 'This model is not available in your region.', 'code': 403, 'metadata': {'routing_funnel': [{'step': 'Initial Endpoints', 'endpoint_count': 7}, {'step': 'Filter by Regional Surcharge', 'endpoint_count': 4}], 'failed_routing_step': 'Gate Endpoints with Geo Restrictions'}}}\", PermissionDeniedError(\"Error code: 403 - {'error': {'message': 'This model is not available in your region.', 'code': 403, 'metadata': {'routing_funnel': [{'step': 'Initial Endpoints', 'endpoint_count': 7}, {'step': 'Filter by Regional Surcharge', 'endpoint_count': 4}], 'failed_routing_step': 'Gate Endpoints with Geo Restrictions'}}}\"))"
+          ],
+          "elapsed_ms": 462.37
+        }
+      ]
+    }
+  ]
+}
