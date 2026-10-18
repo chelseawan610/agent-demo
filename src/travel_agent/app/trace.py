@@ -37,6 +37,14 @@ def _p95(values: list[float]) -> float | None:
     return round(ordered[index], 2)
 
 
+def _group_events(events: list[TraceEvent], key: str) -> dict[str, list[TraceEvent]]:
+    groups: dict[str, list[TraceEvent]] = {}
+    for event in events:
+        group_name = getattr(event, key) or "unknown"
+        groups.setdefault(group_name, []).append(event)
+    return groups
+
+
 class TraceRecorder:
     """Collect model/tool spans and derive safe run-level metrics."""
 
@@ -105,6 +113,19 @@ class TraceRecorder:
         actual_model = model or self.model
         input_tokens = _usage_value(usage, "input_token_count")
         output_tokens = _usage_value(usage, "output_token_count")
+        error_name = type(error).__name__ if error is not None else None
+        if error_name is None:
+            error_category = None
+            retryable = None
+        elif "Timeout" in error_name or "Connection" in error_name:
+            error_category = "provider_transient"
+            retryable = True
+        elif "Structured" in error_name or "Validation" in error_name:
+            error_category = "structured_output"
+            retryable = False
+        else:
+            error_category = "llm_provider_error"
+            retryable = False
         self.events.append(
             TraceEvent(
                 run_id=self.run_id,
@@ -117,6 +138,8 @@ class TraceRecorder:
                 elapsed_ms=round(elapsed_ms, 2),
                 provider="configured LLM",
                 model=actual_model,
+                error_category=error_category,
+                retryable=retryable,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 total_tokens=_usage_value(usage, "total_token_count"),
@@ -140,11 +163,15 @@ class TraceRecorder:
                     trace_id=record.trace_id or self.trace_id,
                     kind="tool",
                     name=record.tool_name,
-                    stage="tool",
+                    stage=record.stage,
                     status=record.status,
                     started_at=record.started_at or datetime.now(timezone.utc),
                     elapsed_ms=record.elapsed_ms,
                     provider=record.provider,
+                    error_category=record.error_category,
+                    retryable=record.retryable,
+                    attempts=record.attempts,
+                    cache_hit=record.cache_hit,
                     tool_inputs=record.inputs,
                     error=record.message or record.error_code,
                 )
@@ -172,12 +199,22 @@ class TraceRecorder:
         input_tokens = [event.input_tokens for event in llm_events if event.input_tokens is not None]
         output_tokens = [event.output_tokens for event in llm_events if event.output_tokens is not None]
         total_tokens = [event.total_tokens for event in llm_events if event.total_tokens is not None]
+        failure_categories = {}
+        for event in attempted:
+            if event.status not in {"error", "unavailable"}:
+                continue
+            category = event.error_category or "unclassified_failure"
+            failure_categories[category] = failure_categories.get(category, 0) + 1
+        duplicate_keys = {}
+        for event in tool_events:
+            if event.tool_inputs is None:
+                continue
+            key = json.dumps(event.tool_inputs, ensure_ascii=False, sort_keys=True, default=str)
+            key = f"{event.name}:{key}"
+            duplicate_keys[key] = duplicate_keys.get(key, 0) + 1
 
         def grouped_metrics(key: str) -> dict[str, dict[str, Any]]:
-            groups: dict[str, list[TraceEvent]] = {}
-            for event in attempted:
-                group_name = getattr(event, key) or "unknown"
-                groups.setdefault(group_name, []).append(event)
+            groups = _group_events(attempted, key)
             return {
                 group_name: {
                     "calls": len(group_events),
@@ -229,6 +266,25 @@ class TraceRecorder:
             "total_tokens": sum(total_tokens) if total_tokens else None,
             "estimated_cost_usd": round(sum(total_cost), 8) if total_cost else None,
             "pricing_configured": bool(self.pricing_by_model),
+            "failure_categories": failure_categories,
+            "failure_by_stage": {
+                stage: {
+                    "failures": sum(
+                        event.status in {"error", "unavailable"}
+                        for event in stage_events
+                    ),
+                    "calls": len(stage_events),
+                }
+                for stage, stage_events in _group_events(attempted, "stage").items()
+            },
+            "skipped_tool_calls": sum(event.status == "skipped" for event in tool_events),
+            "retryable_failures": sum(
+                event.status in {"error", "unavailable"} and event.retryable is True
+                for event in attempted
+            ),
+            "duplicate_tool_calls": sum(
+                count - 1 for count in duplicate_keys.values() if count > 1
+            ),
             "stages": grouped_metrics("stage"),
             "providers": grouped_metrics("provider"),
         }

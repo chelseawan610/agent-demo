@@ -116,6 +116,48 @@ def test_trace_recorder_builds_ids_cost_and_latency_metrics():
     assert metrics["providers"]["configured LLM"]["calls"] == 1
 
 
+def test_trace_metrics_expose_failure_categories_and_duplicate_tools():
+    recorder = TraceRecorder("test-model", run_id="run-1", trace_id="trace-1")
+    results = SearchResults(
+        tool_calls=[
+            ToolCallRecord(
+                run_id="run-1",
+                trace_id="trace-1",
+                tool_name="optimize_transit_route",
+                status="unavailable",
+                elapsed_ms=10,
+                provider="OpenTripPlanner adapter",
+                error_code="not_configured",
+                inputs={"day": 1, "stops": ["A", "B"]},
+            ),
+            ToolCallRecord(
+                run_id="run-1",
+                trace_id="trace-1",
+                tool_name="search_food",
+                status="ok",
+                elapsed_ms=5,
+                provider="Overpass",
+                inputs={"destination": "Tokyo"},
+            ),
+            ToolCallRecord(
+                run_id="run-1",
+                trace_id="trace-1",
+                tool_name="search_food",
+                status="ok",
+                elapsed_ms=5,
+                provider="Overpass",
+                inputs={"destination": "Tokyo"},
+            ),
+        ]
+    )
+
+    metrics = recorder.build_metrics(results)
+
+    assert metrics["failure_categories"] == {"provider_configuration": 1}
+    assert metrics["failure_by_stage"]["routing"]["failures"] == 1
+    assert metrics["duplicate_tool_calls"] == 1
+
+
 def test_run_log_keeps_typed_evidence_and_final_plan(tmp_path):
     path = tmp_path / "full-run.jsonl"
     results = SearchResults(
@@ -146,3 +188,37 @@ def test_run_log_keeps_typed_evidence_and_final_plan(tmp_path):
     assert row["trace_id"] == "trace-1"
     assert row["search_results"]["tool_calls"][0]["tool_name"] == "search_flights"
     assert row["final_plan"]["destination"] == "Tokyo"
+
+
+def test_run_log_persists_failure_attribution_without_prompts(tmp_path):
+    path = tmp_path / "failure-run.jsonl"
+    results = SearchResults(
+        tool_calls=[
+            ToolCallRecord(
+                tool_name="optimize_transit_route",
+                status="unavailable",
+                elapsed_ms=1,
+                provider="OpenTripPlanner adapter",
+                error_code="not_configured",
+            )
+        ]
+    )
+
+    write_run_record(
+        path,
+        run_id="run-1",
+        mode="offline",
+        model=None,
+        status="complete",
+        tool_results=results,
+        metrics={
+            "failure_categories": {"provider_configuration": 1},
+            "failure_by_stage": {"routing": {"failures": 1}},
+        },
+    )
+
+    row = json.loads(path.read_text(encoding="utf-8"))
+    assert row["failure_attribution"]["categories"] == {
+        "provider_configuration": 1
+    }
+    assert row["failure_attribution"]["tool_failures"][0]["stage"] == "routing"

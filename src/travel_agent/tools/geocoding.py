@@ -34,5 +34,10 @@ def resolve_destination(destination: str) -> ToolResult[GeoPoint]:
     except (ExternalToolError, KeyError, TypeError, ValueError) as error:
         code = error.code if isinstance(error, ExternalToolError) else "invalid_response"
         return ToolResult[GeoPoint].unavailable(
-            "Open-Meteo Geocoding", code, str(error), attribution=OPEN_METEO_ATTRIBUTION
+            "Open-Meteo Geocoding",
+            code,
+            str(error),
+            attribution=OPEN_METEO_ATTRIBUTION,
+            retryable=(error.retryable if isinstance(error, ExternalToolError) else None),
+            attempts=(error.attempts if isinstance(error, ExternalToolError) else None),
         )

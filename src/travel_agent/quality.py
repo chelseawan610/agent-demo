@@ -16,6 +16,38 @@ class WorkflowCheck:
     name: str
     passed: bool
     message: str
+    layer: str = "workflow"
+    category: str = "contract"
+
+
+def _check_layer(name: str) -> str:
+    """Map an invariant to the workflow layer it diagnoses."""
+
+    if name.startswith("request_to_plan"):
+        return "intake"
+    if name.startswith("service_scope") or name.startswith("search_plan"):
+        return "planning"
+    if "evidence" in name or name == "itinerary_evidence_is_authoritative":
+        return "evidence"
+    if "route" in name or "activity" in name or "closed" in name:
+        return "constraint"
+    if name == "tool_trace_is_preserved":
+        return "observability"
+    return "workflow"
+
+
+def _check_category(name: str) -> str:
+    if "scope" in name or "executed" in name:
+        return "tool_selection"
+    if "evidence" in name:
+        return "grounding"
+    if "route" in name or "activity" in name or "closed" in name:
+        return "constraint"
+    if name.startswith("request_to_plan"):
+        return "state_consistency"
+    if name == "tool_trace_is_preserved":
+        return "trace_loss"
+    return "contract"
 
 
 def check_workflow_invariants(
@@ -29,7 +61,15 @@ def check_workflow_invariants(
     checks: list[WorkflowCheck] = []
 
     def add(name: str, passed: bool, message: str) -> None:
-        checks.append(WorkflowCheck(name, passed, message))
+        checks.append(
+            WorkflowCheck(
+                name,
+                passed,
+                message,
+                layer=_check_layer(name),
+                category=_check_category(name),
+            )
+        )
 
     add(
         "request_to_plan_duration",

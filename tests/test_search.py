@@ -2,6 +2,7 @@ import pytest
 
 from travel_agent.schemas.request import PreferenceSpec, TripRequest
 from travel_agent.schemas.evidence import GeoPoint, PlaceCandidate, ToolResult, WeatherDay
+from travel_agent.schemas.search import FlightQuery, SearchPlan
 from travel_agent.workflows.search import build_search_plan, execute_search_plan
 
 
@@ -281,6 +282,53 @@ def test_transit_request_uses_transit_adapter_and_preserves_failure(monkeypatch)
         and record.status == "unavailable"
         for record in results.tool_calls
     )
+
+
+def test_search_plan_deduplicates_and_bounds_flight_queries():
+    request = TripRequest(
+        origin="Shanghai",
+        destination="Tokyo",
+        start_date="2099-10-01",
+        requested_services=["flights"],
+    )
+    plan = build_search_plan(request)
+    plan.flight_queries = [
+        *plan.flight_queries,
+        *plan.flight_queries,
+        FlightQuery(
+            origin="Tokyo",
+            destination="Shanghai",
+            departure_date="2099-10-04",
+        ),
+        FlightQuery(
+            origin="Tokyo",
+            destination="Shanghai",
+            departure_date="2099-10-05",
+        ),
+    ]
+    normalized = SearchPlan.model_validate(plan.model_dump(mode="json"))
+
+    assert len(normalized.flight_queries) == 2
+    assert [query.departure_date.isoformat() for query in normalized.flight_queries] == [
+        "2099-10-01",
+        "2099-10-04",
+    ]
+
+
+def test_tool_records_have_failure_layer_and_category():
+    from travel_agent.schemas.evidence import ToolCallRecord
+
+    record = ToolCallRecord(
+        tool_name="optimize_transit_route",
+        provider="OpenTripPlanner adapter",
+        status="unavailable",
+        error_code="not_configured",
+        elapsed_ms=1,
+    )
+
+    assert record.stage == "routing"
+    assert record.error_category == "provider_configuration"
+    assert record.retryable is False
 
 
 def test_partial_failure_keeps_successful_attractions(monkeypatch):

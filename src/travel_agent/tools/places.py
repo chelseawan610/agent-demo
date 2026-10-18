@@ -139,7 +139,12 @@ def resolve_preference_place(
     except (ExternalToolError, KeyError, IndexError, TypeError, ValueError) as error:
         code = error.code if isinstance(error, ExternalToolError) else "invalid_response"
         return ToolResult[PlaceCandidate].unavailable(
-            "Photon", code, str(error), attribution=OSM_ATTRIBUTION
+            "Photon",
+            code,
+            str(error),
+            attribution=OSM_ATTRIBUTION,
+            retryable=(error.retryable if isinstance(error, ExternalToolError) else None),
+            attempts=(error.attempts if isinstance(error, ExternalToolError) else None),
         )
 
 
@@ -351,7 +356,12 @@ def search_attractions(
     except (ExternalToolError, KeyError, TypeError, ValueError) as error:
         code = error.code if isinstance(error, ExternalToolError) else "invalid_response"
         return ToolResult[list[PlaceCandidate]].unavailable(
-            "Overpass API", code, str(error), attribution=OSM_ATTRIBUTION
+            "Overpass API",
+            code,
+            str(error),
+            attribution=OSM_ATTRIBUTION,
+            retryable=(error.retryable if isinstance(error, ExternalToolError) else None),
+            attempts=(error.attempts if isinstance(error, ExternalToolError) else None),
         )
 
 
@@ -398,7 +408,12 @@ def search_food(
     except (ExternalToolError, KeyError, TypeError, ValueError) as error:
         code = error.code if isinstance(error, ExternalToolError) else "invalid_response"
         return ToolResult[list[PlaceCandidate]].unavailable(
-            "Overpass API", code, str(error), attribution=OSM_ATTRIBUTION
+            "Overpass API",
+            code,
+            str(error),
+            attribution=OSM_ATTRIBUTION,
+            retryable=(error.retryable if isinstance(error, ExternalToolError) else None),
+            attempts=(error.attempts if isinstance(error, ExternalToolError) else None),
         )
 
 

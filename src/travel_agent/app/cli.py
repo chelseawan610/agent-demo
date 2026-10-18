@@ -186,121 +186,148 @@ async def run_offline(args: argparse.Namespace) -> None:
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the travel planning agent")
-    parser.add_argument(
+    parser = argparse.ArgumentParser(
+        description="Run the travel planning agent",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        epilog=(
+            "普通运行直接执行本模块即可；--debug、--offline、--review 和 RAG 参数 "
+            "主要用于开发、教学和评测。多个本地用户共用 Memory 文件时，使用 "
+            "--user-id 覆盖默认的 local-user。"
+        ),
+    )
+    common = parser.add_argument_group("常用运行参数")
+    common.add_argument(
         "--mode",
         choices=["auto", "direct", "convert", "text"],
-        help="Override TRIP_OUTPUT_MODE for this run",
+        default=os.getenv("TRIP_OUTPUT_MODE", "auto").lower(),
+        help="模型输出策略；普通运行保持 auto 即可",
     )
-    parser.add_argument(
+    common.add_argument(
         "--output",
         choices=["markdown", "json"],
         default="markdown",
-        help="Choose the display format for a validated TripPlan",
+        help="最终展示格式；JSON 适合程序和评测读取",
     )
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Print the received input, parsed TripRequest, and SearchPlan",
-    )
-    parser.add_argument(
-        "--debug-prompts",
-        action="store_true",
-        help="Print each user message sent to the LLM and its structured-output options",
-    )
-    parser.add_argument(
-        "--offline",
-        action="store_true",
-        help="Skip the LLM and run the typed workflow from --request-json",
-    )
-    parser.add_argument(
-        "--request-json",
-        help="Inline TripRequest JSON, or @path/to/request.json, for --offline",
-    )
-    parser.add_argument(
-        "--model",
-        help="Override LLM_MODEL for this run, for example qwen/qwen3.7-flash",
-    )
-    parser.add_argument(
-        "--fallback-model",
-        help="Optional model used only after a transient provider failure",
-    )
-    parser.add_argument(
-        "--log-file",
-        help="Append one redacted JSON record per run to this JSONL file",
-    )
-    parser.add_argument(
-        "--log-input",
-        action="store_true",
-        help="Include the raw CLI input in --log-file; omit by default",
-    )
-    parser.add_argument(
-        "--log-content",
-        action="store_true",
-        help="Include bounded LLM output previews in the trajectory",
-    )
-    parser.add_argument(
-        "--memory-file",
-        help="Optional local JSON file for explicit reusable preferences",
-    )
-    parser.add_argument(
+    common.add_argument(
         "--user-id",
         default="local-user",
-        help="User key used by --memory-file",
+        help="Memory 使用的本地用户键；多人共用时手动覆盖",
     )
-    parser.add_argument(
-        "--forget-memory",
+
+    diagnostics = parser.add_argument_group("调试和评测参数")
+    diagnostics.add_argument(
+        "--debug",
         action="store_true",
-        help="Delete this user's preferences from --memory-file before running",
+        help="打印需求、SearchPlan、工具记录和确定性检查",
     )
-    parser.add_argument(
+    diagnostics.add_argument(
+        "--debug-prompts",
+        action="store_true",
+        help="打印发送给 LLM 的动态消息和结构化输出选项",
+    )
+    diagnostics.add_argument(
+        "--offline",
+        action="store_true",
+        help="跳过 LLM；必须同时提供 --request-json",
+    )
+    diagnostics.add_argument(
+        "--request-json",
+        help="结构化 TripRequest JSON，或使用 @path/to/request.json",
+    )
+    diagnostics.add_argument(
         "--review",
         action="store_true",
-        help="Run one optional read-only LLM review after the plan is complete",
+        help="计划完成后额外运行一次只读 MAF Reviewer",
     )
-    parser.add_argument(
+
+    model_options = parser.add_argument_group("模型和记录参数")
+    model_options.add_argument(
+        "--model",
+        help="临时覆盖 .env 中的 LLM_MODEL",
+    )
+    model_options.add_argument(
+        "--fallback-model",
+        help="主模型发生可重试 provider 错误时使用的备用模型",
+    )
+    model_options.add_argument(
+        "--log-file",
+        help="将每次运行的脱敏 JSONL 记录追加到指定文件",
+    )
+    model_options.add_argument(
+        "--log-input",
+        action="store_true",
+        help="把原始用户输入写入日志；默认关闭以减少隐私风险",
+    )
+    model_options.add_argument(
+        "--log-content",
+        action="store_true",
+        help="在轨迹中保存有限长度的 LLM 输出预览",
+    )
+
+    state_options = parser.add_argument_group("本地状态参数")
+    state_options.add_argument(
+        "--memory-file",
+        help="可选的本地 JSON Memory 文件；不传则不保存长期偏好",
+    )
+    state_options.add_argument(
+        "--forget-memory",
+        action="store_true",
+        help="运行前删除当前 user-id 的全部偏好",
+    )
+    state_options.add_argument(
         "--checkpoint-file",
-        help="Optional local JSON file for workflow checkpoints",
+        help="可选的本地 workflow checkpoint 文件",
     )
-    parser.add_argument(
+    state_options.add_argument(
         "--resume",
         action="store_true",
-        help="Resume a searched checkpoint with the planner, or render a completed one",
+        help="从 searched checkpoint 继续，或直接渲染 complete checkpoint",
     )
-    parser.add_argument(
+
+    rag_options = parser.add_argument_group("RAG 参数")
+    rag_options.add_argument(
         "--knowledge-dir",
         default="knowledge",
-        help="Local Markdown knowledge directory used by the RAG retriever",
+        help="本地 Markdown 知识库目录",
     )
-    parser.add_argument(
+    rag_options.add_argument(
         "--no-rag",
         action="store_true",
-        help="Skip local knowledge retrieval for this run",
+        help="本次运行关闭知识检索；主要用于对照评测",
     )
-    parser.add_argument(
+    rag_options.add_argument(
         "--rag-engine",
         choices=["hybrid", "vector", "bm25"],
         default=os.getenv("RAG_ENGINE", "hybrid"),
-        help="Local RAG engine: hybrid semantic+BM25, vector, or dependency-free bm25",
+        help="RAG 引擎；默认 hybrid，缺少向量依赖时降级为 BM25",
     )
-    parser.add_argument(
+    rag_options.add_argument(
         "--rag-model",
         default=os.getenv("RAG_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
-        help="Sentence Transformers embedding model used by vector/hybrid RAG",
+        help="vector/hybrid 使用的 embedding 模型",
     )
-    parser.add_argument(
+    rag_options.add_argument(
         "--rag-db-dir",
         default=os.getenv("RAG_DB_DIR", ".local/chroma_rag"),
-        help="Persistent Chroma directory for the local vector index",
+        help="Chroma 向量索引目录",
     )
     args = parser.parse_args()
+
+    if args.offline and not args.request_json:
+        parser.error("--offline 必须同时提供 --request-json")
+    if args.request_json and not args.offline:
+        parser.error("--request-json 只能和 --offline 一起使用")
+    if args.resume and not args.checkpoint_file:
+        parser.error("--resume 必须同时提供 --checkpoint-file")
+    if args.forget_memory and not args.memory_file:
+        parser.error("--forget-memory 必须同时提供 --memory-file")
+    if (args.log_input or args.log_content) and not args.log_file:
+        parser.error("--log-input/--log-content 必须同时提供 --log-file")
+
     args.run_id = new_run_id()
 
     resume_checkpoint: WorkflowCheckpoint | None = None
     if args.resume:
-        if not args.checkpoint_file:
-            print("--resume 需要同时提供 --checkpoint-file")
-            return
         try:
             checkpoint = CheckpointStore(args.checkpoint_file).load()
         except Exception as error:

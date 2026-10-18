@@ -314,6 +314,16 @@ def run_case(case: WorkflowCase) -> dict[str, Any]:
             "passed": request.status != "ready",
             "checks": {"missing_request_stops_before_search": request.status != "ready"},
             "message": "未满足硬字段时不得进入搜索执行。",
+            "failure_details": []
+            if request.status != "ready"
+            else [
+                {
+                    "layer": "intake",
+                    "category": "missing_required_field",
+                    "name": "missing_request_stops_before_search",
+                    "message": "未满足硬字段时不得进入搜索执行。",
+                }
+            ],
             "elapsed_ms": round((perf_counter() - started) * 1000, 2),
         }
 
@@ -326,7 +336,34 @@ def run_case(case: WorkflowCase) -> dict[str, Any]:
         "passed": all(check.passed for check in checks),
         "checks": {check.name: check.passed for check in checks},
         "failures": [check.message for check in checks if not check.passed],
+        "failure_details": [
+            {
+                "name": check.name,
+                "layer": check.layer,
+                "category": check.category,
+                "message": check.message,
+            }
+            for check in checks
+            if not check.passed
+        ],
+        "check_metadata": {
+            check.name: {"layer": check.layer, "category": check.category}
+            for check in checks
+        },
         "tool_names": [record.tool_name for record in results.tool_calls],
+        "tool_failures": [
+            {
+                "tool": record.tool_name,
+                "stage": record.stage,
+                "provider": record.provider,
+                "status": record.status,
+                "error_code": record.error_code,
+                "error_category": record.error_category,
+                "retryable": record.retryable,
+            }
+            for record in results.tool_calls
+            if record.status in {"error", "unavailable"}
+        ],
         "elapsed_ms": round((perf_counter() - started) * 1000, 2),
     }
 

@@ -34,6 +34,13 @@ chunk 的 token 频次和 document frequency。
 `passage:` 前缀，代码在 `SentenceTransformerEmbedder` 中统一添加。模型首次运行会
 从 Hugging Face 下载到本机缓存；不需要 API key，也不需要 GPU，小知识库用 CPU 足够。
 
+这里的模型参数是 embedding 模型，不是负责生成旅行回答的聊天模型。CLI 的
+`--rag-model`/环境变量 `RAG_EMBEDDING_MODEL` 接受 Sentence Transformers 能加载的
+Hugging Face 模型名称或本地模型目录，例如 `intfloat/multilingual-e5-small`；不能直接
+传 `gpt-*`、`qwen-*`、`deepseek-*` 这类聊天模型名称。`bm25` 不使用这个参数，只有
+`vector` 和 `hybrid` 会加载它。模型更换后应使用新的 `--rag-db-dir`，因为向量维度和
+索引空间可能不同。
+
 `ChromaKnowledgeBase` 用 `PersistentClient` 把向量、原文和 source/section metadata
 保存在 `--rag-db-dir`，默认 `.local/chroma_rag`。它用文档内容哈希判断索引是否需要重建，
 所以第二次运行不会无条件重新计算 embedding。Chroma 的距离是 cosine distance，代码
@@ -85,6 +92,14 @@ PYTHONPATH=src uv run python -m travel_agent.app.cli \
 
 # 强制只用向量检索；依赖/模型不可用时会明确失败，不会伪装成 BM25
 PYTHONPATH=src uv run python -m travel_agent.app.cli --rag-engine vector
+```
+
+默认模型和配置也可以写进 `.env`，CLI 显式参数会覆盖环境变量：
+
+```dotenv
+RAG_ENGINE=hybrid
+RAG_EMBEDDING_MODEL=intfloat/multilingual-e5-small
+RAG_DB_DIR=.local/chroma_rag
 ```
 
 如果 `hybrid` 初始化向量依赖失败，它会返回 BM25 retriever。这个降级只发生在检索

@@ -71,6 +71,27 @@ def write_run_record(
             "error": error,
             "trajectory": [_dump(item) for item in (trajectory or [])],
             "metrics": _dump(metrics),
+            "failure_attribution": (
+                {
+                    "categories": metrics.get("failure_categories", {}),
+                    "layers": metrics.get("failure_by_stage", {}),
+                    "tool_failures": [
+                        {
+                            "tool": item.tool_name,
+                            "stage": item.stage,
+                            "provider": item.provider,
+                            "status": item.status,
+                            "error_code": item.error_code,
+                            "error_category": item.error_category,
+                            "retryable": item.retryable,
+                        }
+                        for item in getattr(tool_results, "tool_calls", [])
+                        if getattr(item, "status", None) in {"error", "unavailable"}
+                    ],
+                }
+                if isinstance(metrics, dict)
+                else None
+            ),
         }
         if include_input:
             record["input"] = request_text

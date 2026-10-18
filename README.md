@@ -143,22 +143,17 @@ the default.
 
 ## Run
 
-Markdown output:
+最简单的 Markdown 运行方式（普通用户只需要这一条）：
 
 ```bash
-PYTHONPATH=src uv run python -m travel_agent.app.cli \
-  --mode auto \
-  --output markdown \
-  --debug
+PYTHONPATH=src uv run python -m travel_agent.app.cli
 ```
 
-Machine-readable JSON:
+如果需要给程序或评测读取 JSON：
 
 ```bash
 PYTHONPATH=src uv run python -m travel_agent.app.cli \
-  --mode auto \
-  --output json \
-  --debug
+  --output json
 ```
 
 Example request:
@@ -170,7 +165,43 @@ Example request:
 
 See [docs/demo.md](docs/demo.md) for the expected tool trace and JSON/Markdown shapes.
 
-`--debug` shows `TripRequest`, `SearchPlan`, and `ToolCallRecord`. It never prints the LLM API key.
+`--debug` shows `TripRequest`, `SearchPlan`, `ToolCallRecord`, and deterministic
+workflow checks. It never prints the LLM API key:
+
+```bash
+PYTHONPATH=src uv run python -m travel_agent.app.cli \
+  --debug --output json
+```
+
+### CLI 参数怎么选
+
+普通运行不需要记住全部参数。当前参数按使用场景分组：
+
+| 参数组 | 参数 | 用途 |
+| --- | --- | --- |
+| 常用 | `--output` | 选择 Markdown 或 JSON；默认 Markdown |
+| 常用 | `--mode` | 模型结构化输出策略；默认 `auto`，通常不需要改 |
+| 调试评测 | `--debug` | 查看解析后的请求、搜索计划、工具事件和检查结果 |
+| 调试评测 | `--debug-prompts` | 查看发给模型的动态消息；只用于教学和排错 |
+| 调试评测 | `--offline`、`--request-json` | 跳过 LLM，使用结构化请求测试工具 workflow |
+| 调试评测 | `--review` | 计划完成后额外运行一次只读 MAF Reviewer，会增加一次模型调用 |
+| 模型记录 | `--model` | 单次覆盖 `.env` 中的主模型，用于模型比较 |
+| 模型记录 | `--fallback-model` | 主模型发生超时、限流或 5xx 时使用备用模型 |
+| 模型记录 | `--log-file` | 把一次运行的脱敏记录追加到 JSONL |
+| 模型记录 | `--log-input`、`--log-content` | 明确要求时保存原始输入或有限模型输出；都需要 `--log-file` |
+| 本地状态 | `--memory-file` | 开启本地长期偏好 Memory；不传则不保存长期偏好 |
+| 本地状态 | `--user-id` | Memory 的用户键，默认是 `local-user` |
+| 本地状态 | `--forget-memory` | 删除当前用户的偏好；必须和 `--memory-file` 一起使用 |
+| 本地状态 | `--checkpoint-file`、`--resume` | 保存或恢复本地 workflow 阶段 |
+| RAG | `--knowledge-dir` | 指定 Markdown 知识库目录，默认 `knowledge/` |
+| RAG | `--no-rag` | 关闭本次知识检索，用于对照实验 |
+| RAG | `--rag-engine` | 选择 `hybrid`、`vector` 或 `bm25` |
+| RAG | `--rag-model`、`--rag-db-dir` | 配置向量 embedding 模型和 Chroma 目录 |
+
+这些参数都保留，是因为它们分别支持正常运行、故障定位、评测、Memory、
+Checkpoint 和 RAG 实验；但只有 `--output` 是普通用户经常需要的参数。
+`--mode`、模型、日志、review、checkpoint 和 RAG 引擎属于开发者参数，
+不应该要求最终用户理解。
 
 Use `--debug-prompts` when teaching or debugging model input. It prints the
 stage (`intake`, `planner.direct`, `formatter.structured`, and so on), the
@@ -180,19 +211,35 @@ typed Python arguments from `SearchPlan`, not an unconstrained tool loop.
 Use `--model MODEL_ID` to compare a provider model for one run without editing
 `.env`, for example `--model qwen/qwen3.7-flash`.
 
-显式保存用户偏好（可选）：
+显式保存用户偏好（可选）。默认 `user_id` 是 `local-user`：
 
 ```bash
 PYTHONPATH=src uv run python -m travel_agent.app.cli \
   --memory-file .local/memory.json \
-  --user-id chelsea \
   --output markdown
 ```
+
+如果多个用户在同一台电脑、同一个 Memory 文件中运行，需要用 `--user-id`
+覆盖默认值，避免偏好混在一起：
+
+```bash
+PYTHONPATH=src uv run python -m travel_agent.app.cli \
+  --memory-file .local/memory.json \
+  --user-id chelsea
+
+PYTHONPATH=src uv run python -m travel_agent.app.cli \
+  --memory-file .local/memory.json \
+  --user-id alice
+```
+
+`--user-id` 只是本地偏好分区键，不是登录认证。终端没有账户系统；真正的
+Web/API 应用应该由后端从登录会话得到用户 ID。`.env` 和 `.local/` 已加入
+`.gitignore`，不要把 API key、Memory、运行日志或 checkpoint 一起压缩分享。
 
 memory 只保存用户明确说出的旅行偏好，例如“喜欢动漫”；Intake 的本轮追问使用
 一个 MAF `AgentSession` 保存短期上下文。它不把整段对话写入长期偏好文件，
 也不会自动训练模型。当前请求和历史偏好冲突时，当前请求优先。删除本地偏好：
-`--forget-memory --memory-file .local/memory.json --user-id chelsea`。
+`--forget-memory --memory-file .local/memory.json --user-id local-user`。
 
 启用一次只读质量复核：
 
@@ -248,6 +295,15 @@ reasoning are never written to this trajectory. This makes the file useful for
 latency, failure, and cost analysis without turning it into a private prompt
 transcript.
 
+Tool events are assigned stable workflow stages (`retrieval`, `geocoding`,
+`weather`, `places`, `routing`, or `inventory`) and normalized error
+categories such as `provider_transient`, `provider_configuration`,
+`provider_contract`, `provider_no_match`, or `workflow_dependency`. The run
+record exposes `failure_attribution`, while `metrics` includes
+`failure_categories`, `failure_by_stage`, `duplicate_tool_calls`, and
+`retryable_failures`. Evaluation can therefore locate a failure without
+parsing provider-specific exception text.
+
 Use `--log-content` only when you explicitly need bounded LLM output previews
 inside the trajectory. It stores at most 4,000 characters per model event;
 prompts remain excluded. Set `LLM_INPUT_PRICE_USD_PER_MILLION` and
@@ -256,6 +312,20 @@ The run-level `metrics` object reports token totals, per-stage and per-provider
 P95 latency, success rates, provider error rate, and estimated cost. Leave
 prices empty when the gateway's current price is unknown; cost then remains
 `null` rather than pretending to be exact.
+
+Public-tool transport behavior is configurable through `.env`:
+
+```text
+TRAVEL_API_TIMEOUT_SECONDS=20
+TRAVEL_API_CACHE_TTL_SECONDS=300
+TRAVEL_API_BACKOFF_SECONDS=1
+TRAVEL_API_MAX_BACKOFF_SECONDS=8
+```
+
+Only timeouts, connection errors, 408/425/429, and 5xx responses are retried.
+Schema errors, non-retryable 4xx responses, no-match results, and unconfigured
+adapters are reported directly. A valid `Retry-After` header is honored up to
+one minute.
 
 ### Run without an LLM
 
@@ -329,7 +399,7 @@ PYTHONPATH=src uv run pytest -q -m llm_live
 
 The offline suite covers service routing, one-way/round-trip boundaries, cross-month dates, one-day trips, three-round clarification, typed output, provider errors, partial degradation, food scope, transit-adapter degradation, weather-aware activity assignment, memory contracts, and fact constraints. The live suite covers Tokyo/Seoul/New York geocoding, Tokyo weather, Photon preferences, Overpass attractions, and OSRM routing.
 
-The current local result is `111 passed, 13 deselected`; the explicit public-API
+The current local result is `118 passed, 13 deselected`; the explicit public-API
 smoke run is `8 passed`. Public APIs can still be throttled or temporarily
 unavailable, so the default CI-style suite remains offline.
 
@@ -349,6 +419,18 @@ The report currently contains 23 Chinese/English cases (18 golden cases plus
 5 held-out paraphrases) and checks service scope, dates, duration, budget
 preservation, preferences, readiness, latency, and per-case failures. It is an
 engineering signal, not a claim that the model is always correct.
+
+To aggregate persisted CLI runs and compare two designs or models:
+
+```bash
+PYTHONPATH=src uv run python scripts/analyze_runs.py \
+  evals/results/typed-plan.jsonl evals/results/free-loop.jsonl
+```
+
+The report contains completion rate, failure categories, failing tool stages,
+average tool-call count, duplicate calls, P95 latency summaries, and estimated
+cost. It does not rate prose quality; that remains a separate deterministic,
+LLM-review, or human-evaluation question.
 
 For a full model-backed workflow check, using fixture travel evidence instead
 of public HTTP calls, run:
@@ -380,6 +462,14 @@ stay in range, and tool statuses are preserved. This is intentionally separate
 from an LLM judge. An LLM judge can score open-ended usefulness, but it must not
 be trusted to decide whether a date, price, provider, or tool call actually
 occurred.
+
+Each offline evaluation row also includes `check_metadata`, `failure_details`,
+and `tool_failures`. The `layer` field identifies where a failure occurred
+(`intake`, `planning`, `evidence`, `constraint`, or `observability`), while
+`category` identifies the contract that failed. This makes later ablations
+auditable: compare the same cases with or without typed planning, RAG, or
+deterministic constraints and report changes in failure categories, latency,
+and tool-call count.
 
 The repository also contains an optional LLM judge for one completed run:
 
@@ -440,24 +530,71 @@ LLM 自说自话地判定。
 营业时间或价格工具，也不会被当作实时事实。向量依赖不可用时，`hybrid` 自动退回
 BM25；`vector` 模式则明确报错。
 
-```bash
-PYTHONPATH=src uv run python -m travel_agent.app.cli \
-  --knowledge-dir knowledge --debug --output markdown
+#### RAG 参数和模型要求
 
-PYTHONPATH=src uv run python -m travel_agent.app.cli \
-  --no-rag --output markdown
-```
+RAG 的参数分工如下：
 
-只使用 BM25 不需要额外安装。要启用持久化向量库：
+| 参数 | 作用 | 默认值 | 什么时候需要改 |
+| --- | --- | --- | --- |
+| `--knowledge-dir` | Markdown 知识库目录 | `knowledge` | 资料放在其他目录时 |
+| `--rag-engine` | 检索方式：`bm25`、`vector` 或 `hybrid` | `hybrid` | 零额外依赖选 `bm25`；使用 embedding 时选 `vector`/`hybrid` |
+| `--rag-model` | **embedding 模型**，把查询和文档转成向量 | `intfloat/multilingual-e5-small` | 想比较语义检索模型时 |
+| `--rag-db-dir` | Chroma 本地向量索引目录 | `.local/chroma_rag` | 换 embedding 模型或隔离知识库时 |
+| `--no-rag` | 完全关闭知识检索 | 关闭 | 调试模型/工具链路时 |
+
+`--rag-model` 不是聊天模型参数。它必须是能被
+`sentence-transformers.SentenceTransformer` 加载的 embedding 模型名称，或者本地模型目录；
+不能填写 OpenRouter/聊天模型名，例如 `deepseek-chat`、`qwen-*`、`gpt-*`。聊天模型由
+`--model` 或 `LLM_MODEL` 负责，embedding 模型由 `--rag-model` 或
+`RAG_EMBEDDING_MODEL` 负责，两者是不同的模型用途。
+
+默认模型适合这个小型中英文旅行知识库。第一次使用 `vector`/`hybrid` 时，
+`sentence-transformers` 会从 Hugging Face 下载模型并缓存到本机；因此首次运行需要网络、
+磁盘空间和一些等待时间，但不需要 API key，也不要求 GPU。任意模型名都不会自动可用：
+模型必须公开可下载、与 Sentence Transformers 兼容，并且本机有足够资源。私有或 gated 模型
+还需要相应的 Hugging Face 登录权限。
+
+先安装向量检索依赖：
 
 ```bash
 uv sync --extra dev --extra rag-vector
+```
+
+常用运行方式：
+
+```bash
+# 最稳妥的零额外依赖模式；--rag-model 在此模式不会参与检索
+PYTHONPATH=src uv run python -m travel_agent.app.cli \
+  --rag-engine bm25
+
+# 使用默认 embedding 模型的混合检索
 PYTHONPATH=src uv run python -m travel_agent.app.cli \
   --rag-engine hybrid \
   --rag-model intfloat/multilingual-e5-small \
-  --rag-db-dir .local/chroma_rag --debug --output markdown
+  --rag-db-dir .local/chroma_rag
+
+# 更换 embedding 模型时使用新的索引目录
+PYTHONPATH=src uv run python -m travel_agent.app.cli \
+  --rag-engine hybrid \
+  --rag-model BAAI/bge-m3 \
+  --rag-db-dir .local/chroma_bge_m3
 ```
 
+换模型时建议换 `--rag-db-dir`。因为不同 embedding 模型可能有不同的向量维度和空间，
+复用旧 Chroma 目录可能导致维度冲突或混用旧索引。CLI 参数优先级高于环境变量；不想每次
+输入长参数时，可以在 `.env` 中设置：
+
+上面的 `BAAI/bge-m3` 只是对照实验示例，模型更大、首次下载和 CPU 推理更重；当前项目
+默认的 `intfloat/multilingual-e5-small` 更适合先跑通和课堂演示。
+
+```dotenv
+RAG_ENGINE=hybrid
+RAG_EMBEDDING_MODEL=intfloat/multilingual-e5-small
+RAG_DB_DIR=.local/chroma_rag
+```
+
+第一次展示项目时推荐直接使用默认配置；只有要比较 embedding 模型时才显式传
+`--rag-model` 和新的 `--rag-db-dir`。
 `sentence-transformers` 在本地把 `query:` / `passage:` 转成向量，Chroma
 `PersistentClient` 把向量、原文和 metadata 保存在 `.local/chroma_rag`。首次运行会
 下载模型，CPU 可运行；不需要 embedding API key 或 GPU。`tests/test_rag.py` 覆盖 BM25、

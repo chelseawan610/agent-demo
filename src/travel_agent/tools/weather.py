@@ -73,5 +73,10 @@ def get_weather_forecast(
     except (ExternalToolError, KeyError, IndexError, TypeError, ValueError) as error:
         code = error.code if isinstance(error, ExternalToolError) else "invalid_response"
         return ToolResult[list[WeatherDay]].unavailable(
-            "Open-Meteo Forecast", code, str(error), attribution=OPEN_METEO_ATTRIBUTION
+            "Open-Meteo Forecast",
+            code,
+            str(error),
+            attribution=OPEN_METEO_ATTRIBUTION,
+            retryable=(error.retryable if isinstance(error, ExternalToolError) else None),
+            attempts=(error.attempts if isinstance(error, ExternalToolError) else None),
         )

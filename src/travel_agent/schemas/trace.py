@@ -19,6 +19,10 @@ class TraceEvent(BaseModel):
     elapsed_ms: float
     provider: str | None = None
     model: str | None = None
+    error_category: str | None = None
+    retryable: bool | None = None
+    attempts: int | None = None
+    cache_hit: bool | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
     total_tokens: int | None = None

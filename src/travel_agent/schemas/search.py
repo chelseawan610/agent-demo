@@ -100,6 +100,32 @@ class SearchPlan(BaseModel):
     knowledge_max_chars: int = Field(default=4500, ge=500, le=12000)
 
     @model_validator(mode="after")
+    def bound_repeated_queries(self) -> "SearchPlan":
+        """Make the executable plan idempotent before any provider is called."""
+
+        seen_flights: set[tuple[str, str, str, str | None]] = set()
+        unique_flights: list[FlightQuery] = []
+        for query in self.flight_queries:
+            key = (
+                query.origin,
+                query.destination,
+                query.departure_date.isoformat(),
+                query.return_date.isoformat() if query.return_date else None,
+            )
+            if key in seen_flights:
+                continue
+            seen_flights.add(key)
+            unique_flights.append(query)
+        # A travel request supports at most an outbound and an optional return
+        # query.  This protects the provider from accidental model loops.
+        self.flight_queries = unique_flights[:2]
+        if self.attraction_query is not None:
+            self.attraction_query.limit = min(max(self.attraction_query.limit, 1), 12)
+        if self.food_query is not None:
+            self.food_query.limit = min(max(self.food_query.limit, 1), 12)
+        return self
+
+    @model_validator(mode="after")
     def normalize_route_modes(self) -> "SearchPlan":
         modes = list(dict.fromkeys(self.route_modes or []))
         if self.route_mode == "transit" and "transit" not in modes:

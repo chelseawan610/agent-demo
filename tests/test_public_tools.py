@@ -276,3 +276,50 @@ def test_http_client_retries_retryable_status(monkeypatch):
         JsonHttpClient(attempts=3).get_json("https://example.test/data")
     assert error.value.code == "http_429"
     assert calls == 3
+
+
+def test_http_client_does_not_retry_non_retryable_status(monkeypatch):
+    from travel_agent.tools import http
+
+    calls = 0
+
+    def failing_urlopen(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise HTTPError("url", 404, "missing", {}, None)
+
+    monkeypatch.setattr(http, "urlopen", failing_urlopen)
+    with pytest.raises(ExternalToolError) as error:
+        JsonHttpClient(attempts=3).get_json("https://example.test/data")
+    assert error.value.code == "http_404"
+    assert error.value.retryable is False
+    assert error.value.attempts == 1
+    assert calls == 1
+
+
+def test_http_client_ttl_zero_disables_cache(monkeypatch):
+    from travel_agent.tools import http
+
+    calls = 0
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"ok": true}'
+
+    def successful_urlopen(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return Response()
+
+    monkeypatch.setattr(http, "urlopen", successful_urlopen)
+    client = JsonHttpClient(cache_ttl_seconds=0)
+
+    assert client.get_json("https://example.test/data") == {"ok": True}
+    assert client.get_json("https://example.test/data") == {"ok": True}
+    assert calls == 2

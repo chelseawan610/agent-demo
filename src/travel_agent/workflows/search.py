@@ -1,5 +1,6 @@
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
+import json
 from time import perf_counter
 from typing import Any, Callable
 
@@ -8,6 +9,7 @@ from travel_agent.schemas.evidence import (
     RouteSummary,
     ToolCallRecord,
     ToolResult,
+    infer_tool_stage,
 )
 from travel_agent.schemas.request import TripRequest
 from travel_agent.schemas.search import (
@@ -195,6 +197,8 @@ def _recorded_call(
             f"{type(error).__name__}: {error}",
         )
     status = outcome.status if isinstance(outcome, ToolResult) else "ok"
+    error_code = outcome.error_code if isinstance(outcome, ToolResult) else None
+    stage = _tool_stage(tool_name)
     results.tool_calls.append(
         ToolCallRecord(
             run_id=run_id,
@@ -205,11 +209,31 @@ def _recorded_call(
             status=status,
             elapsed_ms=round((perf_counter() - started) * 1000, 2),
             provider=outcome.provider if isinstance(outcome, ToolResult) else provider,
-            error_code=outcome.error_code if isinstance(outcome, ToolResult) else None,
+            stage=stage,
+            error_code=error_code,
+            error_category=(
+                outcome.error_category if isinstance(outcome, ToolResult) else None
+            ),
+            retryable=(outcome.retryable if isinstance(outcome, ToolResult) else None),
+            attempts=(outcome.attempts if isinstance(outcome, ToolResult) else None),
+            cache_hit=(outcome.cache_hit if isinstance(outcome, ToolResult) else None),
+            dedupe_key=_dedupe_key(tool_name, inputs),
             message=outcome.message if isinstance(outcome, ToolResult) else None,
         )
     )
     return outcome
+
+
+def _tool_stage(tool_name: str) -> str:
+    """Assign a stable workflow layer to every tool event."""
+    return infer_tool_stage(tool_name)
+
+
+def _dedupe_key(tool_name: str, inputs: dict[str, object]) -> str:
+    """Create a stable, redacted key for duplicate-call analysis."""
+
+    payload = json.dumps(inputs, ensure_ascii=False, sort_keys=True, default=str)
+    return f"{tool_name}:{payload}"
 
 
 def _record_skipped(
@@ -231,6 +255,11 @@ def _record_skipped(
             status="skipped",
             elapsed_ms=0,
             provider=provider,
+            stage=_tool_stage(tool_name),
+            error_code="skipped_dependency",
+            error_category="workflow_dependency",
+            retryable=False,
+            dedupe_key=_dedupe_key(tool_name, inputs),
         )
     )
 
