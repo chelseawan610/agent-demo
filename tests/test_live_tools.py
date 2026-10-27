@@ -30,11 +30,11 @@ def test_live_tokyo_weather_three_days():
 
 
 @pytest.mark.parametrize(
-    ("label", "query"),
-    [("Tokyo Tower", "Tokyo Tower Tokyo"), ("Anime", "Anime Tokyo")],
+    ("label", "query", "place_type"),
+    [("Tokyo Tower", "Tokyo Tower Tokyo", "landmark"), ("Victoria Harbour", "Victoria Harbour Hong Kong", "waterfront")],
 )
-def test_live_photon_preferences(label, query):
-    result = resolve_preference_place(label, query)
+def test_live_photon_preferences(label, query, place_type):
+    result = resolve_preference_place(label, query, place_name=label, place_type=place_type)
     assert result.status == "ok", result
     assert result.data.point is not None
 
@@ -43,6 +43,10 @@ def test_live_tokyo_attractions():
     result = search_attractions(
         "Tokyo", GeoPoint(latitude=35.6895, longitude=139.69171), 5000, 5
     )
+    if result.status == "unavailable":
+        pytest.skip(
+            f"Overpass public service unavailable: {result.error_code} {result.message}"
+        )
     assert result.status == "ok", result
     assert result.data
 

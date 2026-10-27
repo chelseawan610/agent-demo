@@ -11,7 +11,7 @@ from travel_agent.schemas.evidence import (
     ToolResult,
     infer_tool_stage,
 )
-from travel_agent.schemas.request import TripRequest
+from travel_agent.schemas.request import PreferenceSpec, TripRequest
 from travel_agent.schemas.search import (
     ActivityQuery,
     AttractionQuery,
@@ -60,6 +60,25 @@ def _attraction_candidate_limit(days: int) -> int:
     return min(max(days * 2, days), 12)
 
 
+def _venue_mix_from_preferences(
+    preferences: list[PreferenceSpec],
+) -> str:
+    """Copy Intake's semantic planning hint into the executable plan.
+
+    No Chinese or English keyword matching happens here. The Intake schema is
+    the language boundary; SearchPlan only consumes its validated enum.
+    """
+
+    hints = {preference.planning_hint for preference in preferences}
+    if "venue_mix" in hints:
+        return "balanced"
+    if "indoor_only" in hints:
+        return "indoor"
+    if "outdoor_only" in hints:
+        return "outdoor"
+    return "unspecified"
+
+
 def build_search_plan(request: TripRequest) -> SearchPlan:
     """Convert a validated request into the only allowed list of tool work."""
 
@@ -85,8 +104,8 @@ def build_search_plan(request: TripRequest) -> SearchPlan:
                 departure_date=request.start_date,
             )
         )
-        inferred_round_trip = len(services) > 1
-        if return_date and (request.return_date or inferred_round_trip):
+        round_trip = request.flight_type != "one_way"
+        if return_date and round_trip:
             plan.flight_queries.append(
                 FlightQuery(
                     origin=request.destination,
@@ -99,7 +118,7 @@ def build_search_plan(request: TripRequest) -> SearchPlan:
             destination=request.destination,
             departure_date=request.start_date,
             return_date=(
-                return_date if request.return_date or inferred_round_trip else None
+                return_date if round_trip else None
             ),
         )
 
@@ -137,6 +156,10 @@ def build_search_plan(request: TripRequest) -> SearchPlan:
             dict.fromkeys(part.strip() for part in query_parts if part.strip())
         )
         plan.knowledge_query = " ".join(unique_parts)
+        # Retrieval scope is structured metadata, not a keyword heuristic in
+        # the intake layer. Destination-specific sections may only be used for
+        # the normalized destination; generic planning sections remain valid.
+        plan.knowledge_scope = request.destination
     if (activity_scope or food_requested) and request.destination:
         plan.destination_query = DestinationQuery(destination=request.destination)
     if activity_scope and request.destination:
@@ -144,6 +167,7 @@ def build_search_plan(request: TripRequest) -> SearchPlan:
             destination=request.destination,
             days=days,
             limit=_attraction_candidate_limit(days),
+            venue_mix=_venue_mix_from_preferences(request.preference_details),
         )
         plan.activity_query = ActivityQuery(
             destination=request.destination,
@@ -151,11 +175,10 @@ def build_search_plan(request: TripRequest) -> SearchPlan:
             start_date=request.start_date,
             preferences=request.preferences,
             preference_details=request.preference_details,
+            venue_mix=_venue_mix_from_preferences(request.preference_details),
         )
         plan.route_enabled = True
-        plan.route_modes = ["driving"]
-        if request.transport_mode == "transit":
-            plan.route_modes.append("transit")
+        plan.route_modes = list(request.transport_modes)
         plan.route_mode = request.transport_mode or "driving"
         if request.start_date:
             plan.weather_query = WeatherQuery(start_date=request.start_date, days=days)
@@ -166,6 +189,11 @@ def build_search_plan(request: TripRequest) -> SearchPlan:
             limit=min(max(days * 2, days), 12),
             preferences=[
                 detail.label
+                for detail in request.preference_details
+                if detail.kind == "food"
+            ],
+            preference_queries=[
+                detail.search_query
                 for detail in request.preference_details
                 if detail.kind == "food"
             ],
@@ -280,6 +308,7 @@ def execute_search_plan(
     if plan.knowledge_query and knowledge_retriever is not None:
         inputs = {
             "query": plan.knowledge_query,
+            "scope": plan.knowledge_scope,
             "top_k": plan.knowledge_top_k,
             "max_chars": plan.knowledge_max_chars,
         }
@@ -292,6 +321,7 @@ def execute_search_plan(
                 knowledge_retriever.provider,
                 knowledge_retriever.search(
                     plan.knowledge_query,
+                    scope=plan.knowledge_scope,
                     top_k=plan.knowledge_top_k,
                     max_chars=plan.knowledge_max_chars,
                 ),
@@ -470,6 +500,8 @@ def execute_search_plan(
                     preference.label,
                     preference.search_query,
                     destination_point,
+                    place_name=preference.place_name,
+                    place_type=preference.place_type,
                 ),
                 run_id=run_id,
                 trace_id=trace_id,
@@ -488,6 +520,7 @@ def execute_search_plan(
                 destination_point,
                 query.radius_meters,
                 query.limit,
+                venue_mix=query.venue_mix,
             ),
             run_id=run_id,
             trace_id=trace_id,
@@ -505,6 +538,8 @@ def execute_search_plan(
                 destination_point,
                 query.radius_meters,
                 query.limit,
+                query.preferences,
+                query.preference_queries,
             ),
             run_id=run_id,
             trace_id=trace_id,
@@ -546,6 +581,8 @@ def execute_search_plan(
             results.preference_places,
             results.attractions,
             preference_labels=plan.activity_query.preferences,
+            preference_details=plan.activity_query.preference_details,
+            venue_mix=plan.activity_query.venue_mix,
             start_date=plan.activity_query.start_date,
             day_capacities=day_capacities,
             rain_probability_by_day=rain_probability_by_day,
@@ -564,6 +601,7 @@ def execute_search_plan(
                     provider_id=activity.provider_id or activity.name,
                     source=activity.source,
                     verified=activity.verified,
+                    route_eligible=activity.route_eligible,
                 )
             )
         total_days = plan.activity_query.days if plan.activity_query else 1

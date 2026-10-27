@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 ServiceName = Literal["flights", "hotels", "activities", "guide", "food"]
+FlightType = Literal["round_trip", "one_way"]
+TransportMode = Literal["driving", "transit"]
 DurationProfile = Literal[
     "day_trip",
     "weekend",
@@ -21,6 +23,9 @@ SERVICE_ORDER: list[ServiceName] = [
     "guide",
     "food",
 ]
+PlaceType = Literal[
+    "landmark", "waterfront", "museum", "park", "restaurant", "hotel", "other"
+]
 
 
 class PreferenceSpec(BaseModel):
@@ -29,6 +34,15 @@ class PreferenceSpec(BaseModel):
     label: str
     search_query: str
     kind: Literal["place", "interest", "food", "accessibility", "service", "other"] = "other"
+    place_name: str | None = Field(
+        default=None, description="Canonical named place without city qualifiers; null for non-place preferences."
+    )
+    place_type: PlaceType = "other"
+    # Intake maps natural language to a stable planning enum. The workflow
+    # consumes this field instead of searching Chinese/English keywords.
+    planning_hint: Literal[
+        "venue_mix", "indoor_only", "outdoor_only", "pace", "none"
+    ] = "none"
 
 
 class BudgetSpec(BaseModel):
@@ -109,14 +123,34 @@ class TripRequest(BaseModel):
     destination: str | None = None
     start_date: date | None = None
     return_date: date | None = None
-    transport_mode: Literal["driving", "transit"] | None = None
+    flight_type: FlightType | None = None
+    # ``transport_mode`` is kept for compatibility with older callers. New
+    # code should use ``transport_modes`` so a request can ask for both
+    # driving and public-transit estimates.
+    transport_mode: TransportMode | None = None
+    transport_modes: list[TransportMode] = Field(
+        default_factory=lambda: ["driving"]
+    )
     days: int | None = None
     nights: int | None = None
+    nights_explicit: bool = False
     duration_profile: DurationProfile = "unknown"
     budget: BudgetSpec | None = None
     preferences: list[str] = Field(default_factory=list)
     preference_details: list[PreferenceSpec] = Field(default_factory=list)
     missing_fields: list[str] = Field(default_factory=list)
+    # Field names the user actually spoke in the message this object was
+    # extracted from.  Clarification merging uses it to tell a deliberate user
+    # correction ("改成4天") apart from a model drifting on an earlier fact.
+    # An empty list is the safe default: merging then keeps confirmed values.
+    stated_fields: list[str] = Field(default_factory=list)
+    # For each filled field, the verbatim span of the user's message that
+    # supports it.  The program verifies the span really occurs in the user's
+    # text, which is an exact check rather than a second model judgement; a
+    # value that cannot be cited is cleared and returned to the ordinary
+    # ``required_missing_fields`` clarification flow.  Services are keyed
+    # ``service:<name>``.
+    field_evidence: dict[str, str] = Field(default_factory=dict)
 
     def required_missing_fields(self, *, services: set[str] | None = None) -> list[str]:
         """Return only fields that must be supplied before external search.
@@ -124,8 +158,10 @@ class TripRequest(BaseModel):
         The model may leave optional planning preferences unknown. This method
         defines the hard boundary shared by intake, clarification, and tests:
         destination is always required; flights add origin and departure date;
-        hotel-only requests add check-in date. Duration, budget, return date,
-        transport mode, and preferences are deliberately optional.
+        hotel-only requests add check-in date. A round-trip flight or a plan
+        containing flights/hotels also needs one duration boundary: days,
+        nights, or a return/check-out date. Budget, transport mode, and
+        preferences remain optional.
         """
 
         active_services = services or set(self.requested_services)
@@ -139,19 +175,60 @@ class TripRequest(BaseModel):
                 missing.append("出发日期")
         elif "hotels" in active_services and not self.start_date:
             missing.append("入住日期")
+
+        itinerary_scope = bool(active_services & {"activities", "guide", "food"})
+        has_duration_boundary = (
+            self.days is not None
+            or self.nights is not None
+            or self.return_date is not None
+        )
+        if not has_duration_boundary:
+            if {"flights", "hotels"} <= active_services:
+                boundary_label = "游玩天数或回程/退房日期"
+            elif "flights" in active_services and self.flight_type != "one_way":
+                boundary_label = "回程日期或游玩天数"
+            elif "hotels" in active_services and itinerary_scope:
+                boundary_label = "游玩天数或入住晚数/退房日期"
+            elif "hotels" in active_services and self.start_date:
+                boundary_label = "入住晚数或退房日期"
+            elif "flights" in active_services and itinerary_scope:
+                boundary_label = "回程日期或游玩天数"
+            else:
+                boundary_label = None
+            if boundary_label is not None:
+                missing.append(boundary_label)
         return missing
 
     def _resolve_duration(self, services: set[str]) -> None:
         """Resolve a planning horizon before SearchPlan creates tool queries."""
 
         itinerary_scope = bool(services & {"activities", "guide", "food"})
+        if "hotels" not in services and not self.nights_explicit:
+            # A model may copy days into nights even for a flight or guide
+            # request. Nights only affect search when they are a user-supplied
+            # boundary or an accommodation is in scope.
+            self.nights = None
+        has_explicit_boundary = any(
+            value is not None for value in (self.days, self.nights, self.return_date)
+        )
+        requires_boundary = (
+            "hotels" in services
+            or ("flights" in services and self.flight_type != "one_way")
+            or (bool(services & {"flights", "hotels"}) and itinerary_scope)
+        )
+        if requires_boundary and not has_explicit_boundary:
+            # Do not manufacture a duration while the intake state machine is
+            # still asking the user for one. Keeping these fields null also
+            # lets a later clarification answer replace the missing value.
+            return
         if not itinerary_scope:
-            # A one-way flights-only request does not need a fake duration;
-            # hotel-only still needs one concrete stay query.
+            # A one-way flights-only request does not need a fake duration.
             if "hotels" in services and self.nights is None:
                 if self.start_date is not None and self.return_date is not None:
                     span = (self.return_date - self.start_date).days
                     self.nights = span if span > 0 else 1
+                elif self.days is not None and not self.nights_explicit:
+                    self.nights = max(self.days - 1, 0)
                 else:
                     self.nights = 1
             return
@@ -165,7 +242,9 @@ class TripRequest(BaseModel):
         }.get(self.duration_profile)
         date_derived_days = None
         if self.start_date is not None and self.return_date is not None:
-            span = (self.return_date - self.start_date).days + 1
+            # The project treats a date interval as its elapsed duration:
+            # Oct 20 -> Oct 23 is 3 days, not 4 calendar labels.
+            span = (self.return_date - self.start_date).days
             if span > 0:
                 date_derived_days = span
 
@@ -181,8 +260,11 @@ class TripRequest(BaseModel):
                 # a guide-only request can remain a one-day experience.
                 self.days = 2 if {"flights", "hotels"} <= services else 1
 
-        if "hotels" in services and self.nights is None:
-            self.nights = max(self.days - 1, 0)
+        if "hotels" in services and not self.nights_explicit:
+            if self.start_date is not None and self.return_date is not None:
+                self.nights = max((self.return_date - self.start_date).days, 0)
+            else:
+                self.nights = max(self.days - 1, 0)
 
     @field_validator("start_date", "return_date", mode="before")
     @classmethod
@@ -201,6 +283,17 @@ class TripRequest(BaseModel):
         if isinstance(value, date):
             return value
         return parse_calendar_date(value)
+
+    @field_validator("transport_modes", mode="before")
+    @classmethod
+    def normalize_transport_modes(cls, value: object) -> object:
+        """Accept omitted or legacy single-mode model output."""
+
+        if value is None:
+            return ["driving"]
+        if isinstance(value, str):
+            return [value]
+        return value
 
     @model_validator(mode="before")
     @classmethod
@@ -269,6 +362,22 @@ class TripRequest(BaseModel):
         self.requested_services = [
             service for service in SERVICE_ORDER if service in services
         ]
+        modes = list(dict.fromkeys(self.transport_modes or []))
+        # Older callers set only the compatibility field ``transport_mode``;
+        # their default list is ``["driving"]``. Preserve the old behavior for
+        # that shape, while respecting an explicit ``["transit"]`` request.
+        if self.transport_mode == "transit" and modes == ["driving"]:
+            modes.append("transit")
+        if not modes:
+            modes = ["transit" if self.transport_mode == "transit" else "driving"]
+        self.transport_modes = modes
+        self.transport_mode = "transit" if "transit" in modes else "driving"
+        if "flights" in services:
+            # Round trip is the safe default for a flight request. The intake
+            # model may set one_way only when the user explicitly says so.
+            self.flight_type = self.flight_type or "round_trip"
+        else:
+            self.flight_type = None
         if "hotels" in services and "guide" in services:
             # A guide is an itinerary request, so hotel + guide always carries
             # the activities service even if the model omitted that enum.
@@ -300,6 +409,14 @@ class TripRequest(BaseModel):
             missing.append(f"{date_label}（不能早于今天）")
         else:
             missing.extend(self.required_missing_fields(services=services))
+
+        invalid_return_date = (
+            self.start_date is not None
+            and self.return_date is not None
+            and self.return_date <= self.start_date
+        )
+        if invalid_return_date:
+            missing.append("回程日期（必须晚于出发日期）")
 
         self._resolve_duration(services)
 

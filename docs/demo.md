@@ -38,6 +38,10 @@ search_food(Tokyo, ...)                             # Overpass / OSM
 `optimize_transit_route`。当前公共交通结果会记录为 `unavailable / not_configured`，
 但驾车路线仍然保留；系统不会复用 OSRM 的驾车分钟数冒充公交时间。
 
+需求中的交通方式保存在 `TripRequest.transport_modes`，因此“驾车和公共交通都给我
+参考”会生成 `["driving", "transit"]`，而不是用一个字段覆盖另一个。旧的
+`transport_mode` 仍保留为兼容字段，表示主要模式。
+
 ## Markdown shape
 
 Live names and weather values may change, but the validated shape is stable:

@@ -14,11 +14,11 @@ def optimize_day_route(
 ) -> ToolResult[RouteSummary]:
     """Order a day's resolved stops and estimate a driving route with OSRM."""
 
-    resolved = [place for place in places if place.point is not None]
+    resolved = [place for place in places if place.point is not None and place.route_eligible]
     print(f"[tool] optimize_day_route(day={day!r}, stops={len(resolved)!r})")
     if len(resolved) < 2:
         return ToolResult[RouteSummary].skipped(
-            "OSRM", "少于两个已定位地点，无法计算路线。"
+            "OSRM", "少于两个可用于路线的已定位地点；区域中心不作为到访入口。"
         )
     coordinates = ";".join(
         f"{place.point.longitude},{place.point.latitude}" for place in resolved
@@ -82,7 +82,7 @@ def optimize_transit_route(
     replace this function without changing SearchPlan or TripPlan.
     """
 
-    resolved_count = sum(place.point is not None for place in places)
+    resolved_count = sum(place.point is not None and place.route_eligible for place in places)
     print(f"[tool] optimize_transit_route(day={day!r}, stops={resolved_count!r})")
     if resolved_count < 2:
         return ToolResult[RouteSummary].skipped(

@@ -8,6 +8,7 @@ from agent_framework import Agent
 from agent_framework.exceptions import ChatClientException
 from travel_agent.schemas.request import TripRequest
 from travel_agent.schemas.search import SearchResults
+from travel_agent.schemas.narrative import TripNarrative
 from travel_agent.schemas.trip import ActivityItem, DayPlan, TripPlan
 from travel_agent.rag.models import KnowledgeCitation
 from travel_agent.validation import validate_trip_plan
@@ -154,6 +155,17 @@ def _response_to_trip_plan(response: Any) -> TripPlan:
     return parse_trip_plan(response.text)
 
 
+def _response_to_narrative(response: Any) -> TripNarrative:
+    """Read the small model-authored object from MAF or raw JSON text."""
+
+    value = _response_value(response)
+    if value is not None:
+        if isinstance(value, str):
+            return TripNarrative.model_validate(json.loads(value))
+        return TripNarrative.model_validate(value)
+    return TripNarrative.model_validate(json.loads(response.text.strip()))
+
+
 def _apply_request_constraints(
     plan: TripPlan,
     request_context: TripRequest | None,
@@ -170,19 +182,13 @@ def _apply_request_constraints(
     # narrative text, but it cannot change destination, duration, or budget.
     if request_context.destination is not None:
         plan.destination = request_context.destination
-    requested_modes = (
-        ["driving", "transit"]
-        if request_context.transport_mode == "transit"
-        else ["driving"]
-    )
+    requested_modes = list(request_context.transport_modes)
     if search_results is not None and search_results.route_modes:
         requested_modes = list(search_results.route_modes)
     # Keep the user's explicit transit request even if a hand-built or
     # partially failed SearchResults object omitted its route_modes metadata.
-    if request_context.transport_mode == "transit" and "transit" not in requested_modes:
-        requested_modes.append("transit")
-    if "transit" in requested_modes and "driving" not in requested_modes:
-        requested_modes.insert(0, "driving")
+    if request_context.transport_mode == "transit" and not requested_modes:
+        requested_modes = ["transit"]
     plan.transport_mode = "transit" if "transit" in requested_modes else "driving"
     plan.transport_modes = requested_modes
     if request_context.days is not None:
@@ -192,12 +198,18 @@ def _apply_request_constraints(
     plan.budget = request_context.budget
     plan.preferences = request_context.preferences
     if not plan.summary.strip():
+        duration_text = (
+            f"{plan.days} 日旅行计划"
+            if plan.days is not None
+            else "航班候选方案"
+        )
         plan.summary = (
             f"已根据确认后的需求整理 {plan.destination} "
-            f"{plan.days} 日旅行计划。"
+            f"{duration_text}。"
         )
     # Search tools are the source of truth for factual candidates. The planner
     # may organize them, but it may not replace them with invented options.
+    degraded = False
     if search_results is not None:
         plan.flights = search_results.flights
         plan.hotels = search_results.hotels
@@ -224,6 +236,20 @@ def _apply_request_constraints(
             and search_results.foods.data is not None
             else []
         )
+        if (
+            request_context.requested_services
+            and "food" in request_context.requested_services
+            and request_context.preference_details
+            and search_results.foods is not None
+            and search_results.foods.status == "ok"
+            and not plan.food
+        ):
+            note = (
+                "没有找到带有用户餐饮偏好匹配标签的候选；"
+                "未将普通餐饮地点冒充为目标菜系。"
+            )
+            if note not in plan.notes:
+                plan.notes.append(note)
         knowledge_result = search_results.knowledge
         knowledge_hits = (
             knowledge_result.data
@@ -313,7 +339,7 @@ def _apply_request_constraints(
                         if activity.day == day_number
                     ],
                 )
-                for day_number in range(1, plan.days + 1)
+                for day_number in range(1, (plan.days or 0) + 1)
             ]
         unavailable = [
             result
@@ -328,6 +354,29 @@ def _apply_request_constraints(
             ]
             if result is not None and result.status == "unavailable"
         ]
+        degraded = bool(unavailable) or any(
+            record.status == "unavailable" for record in search_results.tool_calls
+        )
+        hints = {detail.planning_hint for detail in request_context.preference_details}
+        known_types = {item.venue_type for item in search_results.activities}
+        if "venue_mix" in hints and not {"indoor", "outdoor"} <= known_types:
+            degraded = True
+            plan.notes.append(
+                "室内外搭配尚未满足：当前工具未提供足够的、类型已核验的室内和室外候选。"
+            )
+        # A strict indoor/outdoor request filters candidates in
+        # ``assign_activities``. Filtering everything out must be reported the
+        # same way, otherwise an empty itinerary looks like a complete plan.
+        for strict_hint, venue_type, label in (
+            ("indoor_only", "indoor", "室内"),
+            ("outdoor_only", "outdoor", "室外"),
+        ):
+            if strict_hint in hints and venue_type not in known_types:
+                degraded = True
+                plan.notes.append(
+                    f"只要{label}活动的偏好尚未满足：当前工具未返回任何被明确标记为"
+                    f"{label}的候选地点，因此没有安排相应活动。"
+                )
         for result in unavailable:
             note = f"{result.provider} 暂时不可用：{result.message or result.error_code}"
             if note not in plan.notes:
@@ -344,7 +393,7 @@ def _apply_request_constraints(
     if request_context.status == "ready":
         # Preferences are optional; they must not turn a ready request into a
         # clarification merely because the planner proposed extra questions.
-        plan.status = "complete"
+        plan.status = "partial" if degraded else "complete"
         plan.missing_information = []
     return plan
 
@@ -352,31 +401,115 @@ def _apply_request_constraints(
 def build_deterministic_trip_plan(
     request_context: TripRequest,
     search_results: SearchResults,
+    *,
+    offline: bool = True,
+    generation_source: str | None = None,
 ) -> TripPlan:
     """Assemble a plan from typed request and tool evidence without an LLM.
 
-    This is the offline/demo path. It deliberately generates only generic
-    titles and a factual summary; it does not pretend to perform natural
-    language planning. The same evidence constraints used after an LLM run
-    still protect dates, preferences, candidates, and tool status.
+    The offline CLI path and online LLM degradation share the same factual
+    assembly, but their user-facing explanation must stay distinct. This
+    function deliberately generates only generic titles and a factual summary;
+    it does not pretend to perform natural language planning. The same
+    evidence constraints used after an LLM run still protect dates,
+    preferences, candidates, and tool status.
     """
 
-    days = request_context.days or (
-        request_context.nights + 1 if request_context.nights is not None else 1
-    )
+    days = request_context.days
+    if days is None and request_context.nights is not None:
+        days = request_context.nights + 1
+    if days is None and set(request_context.requested_services) & {
+        "activities",
+        "guide",
+        "food",
+    }:
+        days = 1
     destination = request_context.destination or "未指定目的地"
+    duration_text = (
+        f"{days} 日旅行计划" if days is not None else "纯航班候选"
+    )
+    source = generation_source or (
+        "offline" if offline else "deterministic_fallback"
+    )
+    if source == "offline":
+        summary = (
+            f"离线模式：根据已结构化的 {destination} {duration_text}需求，"
+            "整理免费工具返回的旅行数据。未调用语言模型。"
+        )
+        notes = ["离线模式未调用 LLM；每日标题和说明使用确定性模板。"]
+    elif source == "deterministic_fallback":
+        summary = f"已根据确认后的需求整理 {destination} {duration_text}。"
+        notes = ["语言模型结构化输出未通过校验；已使用确定性事实计划。"]
+    else:
+        summary = f"已根据确认后的需求整理 {destination} {duration_text}。"
+        notes = []
     draft = TripPlan(
+        generation_source=source,
         destination=destination,
         days=days,
-        summary=(
-            f"离线模式：根据已结构化的 {destination} {days} 日需求，"
-            "整理免费工具返回的旅行数据。未调用语言模型。"
-        ),
+        summary=summary,
         budget=request_context.budget,
         preferences=request_context.preferences,
-        notes=["离线模式未调用 LLM；每日标题和说明使用确定性模板。"],
+        notes=notes,
     )
     return _apply_request_constraints(draft, request_context, search_results)
+
+
+def _merge_narrative(
+    narrative: TripNarrative,
+    request_context: TripRequest,
+    search_results: SearchResults,
+) -> TripPlan:
+    """Merge bounded prose into a deterministic fact plan."""
+
+    titles: dict[int, str] = {}
+    for item in narrative.daily_titles:
+        if item.day in titles:
+            raise StructuredOutputError(
+                f"daily_titles contains duplicate day {item.day}"
+            )
+        if request_context.days is not None and item.day > request_context.days:
+            raise StructuredOutputError(
+                f"daily_titles contains out-of-range day {item.day}"
+            )
+        titles[item.day] = item.title
+
+    plan = build_deterministic_trip_plan(
+        request_context,
+        search_results,
+        offline=False,
+        generation_source="llm",
+    )
+    plan.summary = narrative.summary
+    plan.generation_source = "llm"
+    plan.itinerary = [
+        day.model_copy(update={"title": titles.get(day.day, day.title)})
+        for day in plan.itinerary
+    ]
+    return plan
+
+
+# One retry for a schema failure. The planner runs at temperature 0, so the
+# retry is only worth making because the prompt changes: the validation error
+# is appended, which is the single piece of new information available.
+NARRATIVE_ATTEMPTS = 2
+
+
+def with_validation_feedback(prompt: str, detail: str) -> str:
+    """Append the schema failure so a retry is not a verbatim replay.
+
+    ``validation_errors`` was already collected for the run log and the final
+    exception text, but was never shown to the model that produced the
+    invalid output.
+    """
+
+    return (
+        f"{prompt}\n\n"
+        "上一次输出没有通过结构化校验：\n"
+        f"{detail}\n"
+        "请只修正这个问题，重新输出一个符合 schema 的 JSON 对象；"
+        "不要改变任何工具提供的事实。"
+    )
 
 
 async def plan_trip_structured(
@@ -393,8 +526,10 @@ async def plan_trip_structured(
 ) -> TripPlan | Any:
     """Run a trip plan and guarantee TripPlan for every structured mode.
 
-    ``auto`` means direct structured output first, then a formatter agent. It
-    does not mean silently returning arbitrary text when both attempts fail.
+    With typed request and search context, ``auto`` asks for a small
+    ``TripNarrative`` and deterministically assembles the final ``TripPlan``.
+    The legacy full-plan conversion path remains available for ``convert`` and
+    callers that do not provide typed evidence.
     """
 
     if mode == "text":
@@ -406,6 +541,140 @@ async def plan_trip_structured(
             on_prompt=on_prompt,
             on_trace=on_trace,
         )
+
+    validation_errors: list[str] = []
+    last_error: Exception | None = None
+
+    def deterministic_fallback() -> TripPlan | None:
+        """Keep typed tool facts usable when narrative generation is unavailable."""
+
+        if request_context is None or search_results is None:
+            return None
+        fallback = build_deterministic_trip_plan(
+            request_context,
+            search_results,
+            offline=False,
+        )
+        only_optional_skipped = (
+            any(
+                result is not None and result.status == "skipped"
+                for result in (
+                    search_results.weather,
+                    search_results.attractions,
+                    search_results.routes,
+                    search_results.foods,
+                    search_results.knowledge,
+                )
+            )
+            and not any(
+                result is not None and result.status == "unavailable"
+                for result in (
+                    search_results.weather,
+                    search_results.attractions,
+                    search_results.routes,
+                    search_results.foods,
+                    search_results.knowledge,
+                )
+            )
+        )
+        if only_optional_skipped:
+            fallback.notes = [
+                note
+                for note in fallback.notes
+                if not note.startswith("语言模型结构化输出未通过校验")
+            ]
+        else:
+            fallback.notes.append("详细结构化校验错误已写入运行日志。")
+        # A request that only asked for flights is incomplete when its sole
+        # required provider returned no candidates. Skipped optional sources
+        # do not make an otherwise usable plan partial.
+        if (
+            request_context.requested_services == ["flights"]
+        ):
+            fallback.status = "partial"
+        return fallback
+
+    # This is the normal CLI path. The model is not asked to reproduce the
+    # large evidence object, so truncation or a provider-specific full-schema
+    # limitation cannot erase successful tool results.
+    if mode in {"direct", "auto"} and request_context is not None and search_results is not None:
+        attempt_prompt = request
+        for attempt in range(1, NARRATIVE_ATTEMPTS + 1):
+            try:
+                response = await plan_trip(
+                    planner,
+                    attempt_prompt,
+                    options={"response_format": TripNarrative, "max_tokens": 1000},
+                    tools=tools,
+                    stage=(
+                        "planner.narrative"
+                        if attempt == 1
+                        else f"planner.narrative.retry{attempt - 1}"
+                    ),
+                    on_prompt=on_prompt,
+                    on_trace=on_trace,
+                )
+            except Exception as error:
+                # Transport failures were already retried inside plan_trip and
+                # a second schema attempt cannot help them.
+                last_error = error
+                if mode == "direct":
+                    raise
+                break
+            try:
+                narrative = _response_to_narrative(response)
+                return _merge_narrative(narrative, request_context, search_results)
+            except Exception as error:
+                detail = f"planner.narrative: {type(error).__name__}: {error}"
+                validation_errors.append(detail[:800])
+                _emit_trace(
+                    on_trace,
+                    "planner.narrative.validation",
+                    datetime.now(timezone.utc),
+                    asyncio.get_running_loop().time(),
+                    None,
+                    "error",
+                    StructuredOutputError(detail),
+                    model=_agent_model(planner),
+                )
+                if mode == "direct":
+                    raise StructuredOutputError(detail) from error
+                if attempt < NARRATIVE_ATTEMPTS:
+                    attempt_prompt = with_validation_feedback(request, detail)
+        fallback = deterministic_fallback()
+        if fallback is not None:
+            return fallback
+        raise StructuredOutputError(
+            "结构化输出失败：缺少 typed request/search context，无法组装事实计划。"
+        ) from (last_error or None)
+
+    def parse_response(response: Any, stage_name: str) -> TripPlan | None:
+        """Parse one model response and record schema failures as trace events."""
+
+        try:
+            plan = _apply_request_constraints(
+                _response_to_trip_plan(response), request_context, search_results
+            )
+            plan.generation_source = "llm"
+            return plan
+        except Exception as error:
+            detail = f"{stage_name}: {type(error).__name__}: {error}"
+            validation_errors.append(detail[:800])
+            # The HTTP/model call itself can succeed while the returned object
+            # fails Pydantic validation. Keep that failure visible in the run
+            # trajectory instead of reporting a misleading all-green stage.
+            started_at = datetime.now(timezone.utc)
+            _emit_trace(
+                on_trace,
+                f"{stage_name}.validation",
+                started_at,
+                asyncio.get_running_loop().time(),
+                None,
+                "error",
+                StructuredOutputError(detail),
+                model=_agent_model(planner),
+            )
+            return None
 
     if mode in {"direct", "auto"}:
         response = None
@@ -419,10 +688,12 @@ async def plan_trip_structured(
                 on_prompt=on_prompt,
                 on_trace=on_trace,
             )
-            return _apply_request_constraints(
-                _response_to_trip_plan(response), request_context, search_results
-            )
-        except Exception:
+            parsed = parse_response(response, "planner.direct")
+            if parsed is not None:
+                return parsed
+            raise StructuredOutputError(validation_errors[-1])
+        except Exception as error:
+            last_error = error
             if mode == "direct":
                 raise
 
@@ -444,27 +715,41 @@ async def plan_trip_structured(
         elif response is not None:
             first_text = response.text
         else:
+            try:
+                first_text = (
+                    await plan_trip(
+                        planner,
+                        request,
+                        tools=tools,
+                        stage="planner.retry",
+                        on_prompt=on_prompt,
+                        on_trace=on_trace,
+                    )
+                ).text
+            except Exception as error:
+                last_error = error
+                fallback = deterministic_fallback()
+                if fallback is not None:
+                    return fallback
+                raise
+    elif mode == "convert":
+        try:
             first_text = (
                 await plan_trip(
                     planner,
                     request,
                     tools=tools,
-                    stage="planner.retry",
+                    stage="planner.text",
                     on_prompt=on_prompt,
                     on_trace=on_trace,
                 )
             ).text
-    elif mode == "convert":
-        first_text = (
-            await plan_trip(
-                planner,
-                request,
-                tools=tools,
-                stage="planner.text",
-                on_prompt=on_prompt,
-                on_trace=on_trace,
-            )
-        ).text
+        except Exception as error:
+            last_error = error
+            fallback = deterministic_fallback()
+            if fallback is not None:
+                return fallback
+            raise
     else:
         raise ValueError("mode must be text, convert, direct, or auto")
 
@@ -490,9 +775,10 @@ async def plan_trip_structured(
             on_prompt=on_prompt,
             on_trace=on_trace,
         )
-        return _apply_request_constraints(
-            _response_to_trip_plan(response), request_context, search_results
-        )
+        parsed = parse_response(response, "formatter.structured")
+        if parsed is not None:
+            return parsed
+        first_error = StructuredOutputError(validation_errors[-1])
     except Exception as error:
         first_error = error
 
@@ -504,14 +790,26 @@ async def plan_trip_structured(
             on_prompt=on_prompt,
             on_trace=on_trace,
         )
-        return _apply_request_constraints(
-            _response_to_trip_plan(response), request_context, search_results
-        )
-    except Exception:
-        pass
+        parsed = parse_response(response, "formatter.text")
+        if parsed is not None:
+            return parsed
+        first_error = first_error or StructuredOutputError(validation_errors[-1])
+    except Exception as error:
+        first_error = first_error or error
+
+    # Once typed evidence is available, another full JSON repair call cannot
+    # add factual information. Use the deterministic evidence plan after the
+    # two formatter compatibility attempts above; this bounds latency for the
+    # default auto workflow. Pure convert mode keeps the extra repair pass
+    # because it may not have a typed request/search context to fall back to.
+    if mode == "auto" and request_context is not None and search_results is not None:
+        fallback = deterministic_fallback()
+        if fallback is not None:
+            return fallback
 
     # One explicit repair pass handles models that returned Markdown or a
-    # nearly-correct object. It is still validated by Pydantic afterwards.
+    # nearly-correct object when no typed evidence fallback is available. It is
+    # still validated by Pydantic afterwards.
     repair_prompt = (
         "Repair the following output. Return ONLY one valid JSON object matching "
         "TripPlan: include every required field, use [] for missing lists, and "
@@ -527,10 +825,21 @@ async def plan_trip_structured(
             on_prompt=on_prompt,
             on_trace=on_trace,
         )
-        return _apply_request_constraints(
-            _response_to_trip_plan(response), request_context, search_results
-        )
+        parsed = parse_response(response, "formatter.repair")
+        if parsed is not None:
+            return parsed
     except Exception as error:
-        raise StructuredOutputError(
-            "结构化输出失败：模型未返回可校验的 TripPlan。"
-        ) from (first_error or error)
+        first_error = first_error or error
+
+    fallback = deterministic_fallback()
+    if fallback is not None:
+        # The tool evidence is already typed and authoritative. Returning a
+        # deterministic plan keeps successful searches usable when a provider
+        # truncates or misformats the narrative JSON.
+        return fallback
+
+    details = " | ".join(validation_errors[-3:])
+    message = "结构化输出失败：模型未返回可校验的 TripPlan。"
+    if details:
+        message += f" 详情：{details}"
+    raise StructuredOutputError(message) from (first_error or last_error)

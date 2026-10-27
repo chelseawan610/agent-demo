@@ -54,6 +54,7 @@ class ActivityItem(BaseModel):
     provider_id: str | None = None
     source: str = ""
     verified: bool = False
+    route_eligible: bool = True
     opening_hours: str | None = None
     opening_status: Literal["open", "closed", "unknown"] = "unknown"
     website: str | None = None
@@ -80,9 +81,14 @@ class DayPlan(BaseModel):
 class TripPlan(BaseModel):
     """The structured final result produced by the travel agent."""
 
-    status: Literal["complete", "needs_clarification"] = "complete"
+    # This is assigned by the application after generation, never trusted from
+    # the model. It makes model output and deterministic degradation auditable.
+    generation_source: Literal["llm", "deterministic_fallback", "offline"] = "llm"
+    status: Literal["complete", "partial", "needs_clarification"] = "complete"
     destination: str
-    days: int
+    # A flight-only request is complete without a trip horizon.  Keep the
+    # field nullable instead of encoding that valid state as ``days=0``.
+    days: int | None
     summary: str
     budget: BudgetSpec | None = None
     transport_mode: Literal["driving", "transit"] = "driving"
@@ -109,17 +115,17 @@ class TripPlan(BaseModel):
     def infer_clarification_status(self) -> "TripPlan":
         """Mark incomplete requests explicitly instead of treating them as plans."""
 
-        if self.days <= 0:
+        if self.days is not None and self.days <= 0:
             self.status = "needs_clarification"
-        else:
+        elif self.status not in {"partial", "needs_clarification"}:
             self.status = "complete"
         modes = list(dict.fromkeys(self.transport_modes or []))
-        if self.transport_mode == "transit" and "transit" not in modes:
+        # Preserve legacy transport_mode-only payloads while respecting an
+        # explicit transport_modes=["transit"] result from intake.
+        if self.transport_mode == "transit" and modes == ["driving"]:
             modes.append("transit")
-        if "transit" in modes and "driving" not in modes:
-            modes.insert(0, "driving")
         if not modes:
-            modes = ["driving"]
+            modes = ["transit" if self.transport_mode == "transit" else "driving"]
         self.transport_modes = modes
         self.transport_mode = "transit" if "transit" in modes else "driving"
         return self

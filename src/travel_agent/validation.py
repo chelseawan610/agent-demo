@@ -8,11 +8,11 @@ def validate_trip_plan(plan: TripPlan) -> TripPlan:
         return plan
 
     errors: list[str] = []
-    if plan.days <= 0:
+    if plan.days is not None and plan.days <= 0:
         errors.append("完整旅行计划的天数必须大于 0")
 
     for day in plan.itinerary:
-        if day.day < 1 or day.day > plan.days:
+        if plan.days is not None and (day.day < 1 or day.day > plan.days):
             errors.append(f"Day {day.day} 超出了旅行天数范围")
 
     if errors:

@@ -27,7 +27,7 @@ def classify_error_code(error_code: str | None) -> str | None:
         return "provider_configuration"
     if error_code in {"invalid_json", "invalid_response", "schema_error"}:
         return "provider_contract"
-    if error_code in {"not_found", "out_of_area", "not_relevant", "no_route"}:
+    if error_code in {"not_found", "out_of_area", "not_relevant", "type_mismatch", "ambiguous_place", "no_route"}:
         return "provider_no_match"
     if error_code in {"missing_dependency", "unsupported"}:
         return "tool_configuration"
@@ -155,8 +155,8 @@ class ToolResult(BaseModel, Generic[T]):
 class GeoPoint(BaseModel):
     """A coordinate whose order is explicit everywhere except OSRM URLs."""
 
-    latitude: float
-    longitude: float
+    latitude: float = Field(ge=-90, le=90, allow_inf_nan=False)
+    longitude: float = Field(ge=-180, le=180, allow_inf_nan=False)
 
 
 class PlaceCandidate(BaseModel):
@@ -166,6 +166,8 @@ class PlaceCandidate(BaseModel):
     provider_id: str
     source: str
     verified: bool = True
+    # A verified geographic feature can still be an area centroid, not an entrance.
+    route_eligible: bool = True
     description: str = ""
     opening_hours: str | None = None
     website: str | None = None

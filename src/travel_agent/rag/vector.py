@@ -13,7 +13,13 @@ from pathlib import Path
 from typing import Any
 
 from travel_agent.rag.models import KnowledgeHit
-from travel_agent.rag.retriever import KnowledgeRetriever, MarkdownKnowledgeBase, _Chunk, split_markdown
+from travel_agent.rag.retriever import (
+    KnowledgeRetriever,
+    MarkdownKnowledgeBase,
+    _Chunk,
+    section_matches_scope,
+    split_markdown,
+)
 
 
 DEFAULT_EMBEDDING_MODEL = "intfloat/multilingual-e5-small"
@@ -157,6 +163,7 @@ class ChromaKnowledgeBase:
         self,
         query: str,
         *,
+        scope: str | None = None,
         top_k: int = 5,
         min_score: float = 0.0,
         max_chars: int = 4500,
@@ -165,7 +172,10 @@ class ChromaKnowledgeBase:
             return []
         result = self._collection.query(
             query_embeddings=[self._embedder.encode_query(query)],
-            n_results=min(max(top_k, 1), 10, self._collection.count()),
+            # Fetch a wider candidate pool before applying section scope. A
+            # destination filter applied after only top_k results could discard
+            # all relevant generic or destination-specific chunks.
+            n_results=min(max(top_k * 3, top_k), 50, self._collection.count()),
             include=["documents", "metadatas", "distances"],
         )
         ids = (result.get("ids") or [[]])[0]
@@ -180,6 +190,8 @@ class ChromaKnowledgeBase:
             if score < min_score:
                 continue
             metadata = metadatas[index] or {}
+            if not section_matches_scope(str(metadata.get("section", "")), scope):
+                continue
             text = documents[index] if index < len(documents) else ""
             if hits and used_chars + len(text) > max_chars:
                 break
@@ -215,17 +227,30 @@ class HybridKnowledgeBase:
         self,
         query: str,
         *,
+        scope: str | None = None,
         top_k: int = 5,
         min_score: float = 0.0,
         max_chars: int = 4500,
     ) -> list[KnowledgeHit]:
         candidate_k = min(max(top_k * 2, top_k), 10)
-        lexical_hits = self.lexical.search(
-            query, top_k=candidate_k, min_score=min_score, max_chars=max_chars
-        )
-        semantic_hits = self.semantic.search(
-            query, top_k=candidate_k, min_score=min_score, max_chars=max_chars
-        )
+        def search_child(child: KnowledgeRetriever) -> list[KnowledgeHit]:
+            try:
+                return child.search(
+                    query,
+                    scope=scope,
+                    top_k=candidate_k,
+                    min_score=min_score,
+                    max_chars=max_chars,
+                )
+            except TypeError:
+                # Keep third-party/teaching retrievers that implement the old
+                # protocol usable while they add the optional scope argument.
+                return child.search(
+                    query, top_k=candidate_k, min_score=min_score, max_chars=max_chars
+                )
+
+        lexical_hits = search_child(self.lexical)
+        semantic_hits = search_child(self.semantic)
         by_id: dict[str, KnowledgeHit] = {}
         fused: dict[str, float] = {}
         for rank, hit in enumerate(lexical_hits, start=1):

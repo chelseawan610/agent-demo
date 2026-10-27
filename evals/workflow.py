@@ -56,6 +56,7 @@ def cases() -> list[WorkflowCase]:
                 destination="Singapore",
                 start_date=date(2027, 11, 8),
                 requested_services=["flights"],
+                flight_type="one_way",
             ),
         ),
         WorkflowCase(

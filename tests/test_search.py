@@ -25,6 +25,33 @@ def test_search_plan_preserves_preferences_and_converts_days_to_nights():
     assert plan.hotel_query.budget.amount == 10000
 
 
+def test_search_plan_carries_semantic_venue_mix_constraint():
+    request = TripRequest(
+        destination="Hong Kong",
+        start_date="2099-10-01",
+        days=3,
+        requested_services=["activities", "guide"],
+        preferences=["维多利亚港", "室内外结合"],
+        preference_details=[
+            {
+                "label": "维多利亚港",
+                "search_query": "Victoria Harbour Hong Kong",
+                "kind": "place",
+            },
+            {
+                "label": "室内外结合",
+                "search_query": "indoor and outdoor attractions Hong Kong",
+                "kind": "interest",
+                "planning_hint": "venue_mix",
+            },
+        ],
+    )
+
+    plan = build_search_plan(request)
+
+    assert plan.activity_query.venue_mix == "balanced"
+
+
 def test_incomplete_request_cannot_create_search_plan():
     request = TripRequest(destination="Tokyo")
 
@@ -53,7 +80,7 @@ def test_search_execution_calls_only_queries_in_the_plan(monkeypatch):
     )
     monkeypatch.setattr(
         "travel_agent.workflows.search.search_attractions",
-        lambda *_args: ToolResult.ok(
+        lambda *_args, **_kwargs: ToolResult.ok(
             "test",
             [
                 PlaceCandidate(
@@ -110,6 +137,7 @@ def test_flight_only_without_return_information_stays_one_way():
         origin="Shanghai",
         destination="Tokyo",
         start_date="2099-10-01",
+        flight_type="one_way",
     )
 
     plan = build_search_plan(request)
@@ -195,6 +223,35 @@ def test_transit_mode_is_preserved_in_search_plan():
     assert plan.route_mode == "transit"
 
 
+def test_both_transport_modes_are_copied_to_search_plan():
+    request = TripRequest(
+        destination="Tokyo",
+        days=2,
+        requested_services=["activities", "guide"],
+        transport_modes=["driving", "transit"],
+    )
+
+    plan = build_search_plan(request)
+
+    assert plan.route_modes == ["driving", "transit"]
+    assert plan.route_mode == "transit"
+
+
+def test_transit_only_is_copied_without_driving():
+    request = TripRequest(
+        destination="Lisbon",
+        days=2,
+        requested_services=["activities", "guide"],
+        transport_modes=["transit"],
+        transport_mode="transit",
+    )
+
+    plan = build_search_plan(request)
+
+    assert plan.route_modes == ["transit"]
+    assert plan.route_mode == "transit"
+
+
 def test_food_search_executes_after_destination_resolution(monkeypatch):
     monkeypatch.setattr(
         "travel_agent.workflows.search.resolve_destination",
@@ -232,13 +289,22 @@ def test_food_search_executes_after_destination_resolution(monkeypatch):
 
 
 def test_transit_request_uses_transit_adapter_and_preserves_failure(monkeypatch):
+    # Offline tests must not reach the OSRM public server.
+    from travel_agent.schemas.evidence import RouteSummary
+
+    monkeypatch.setattr(
+        "travel_agent.workflows.search.optimize_day_route",
+        lambda day, _places: ToolResult.ok(
+            "OSRM", RouteSummary(day=day, ordered_stops=["A", "B"], distance_meters=1000, duration_seconds=100)
+        ),
+    )
     monkeypatch.setattr(
         "travel_agent.workflows.search.resolve_destination",
         lambda _destination: ToolResult.ok("geo", GeoPoint(latitude=35, longitude=139)),
     )
     monkeypatch.setattr(
         "travel_agent.workflows.search.search_attractions",
-        lambda *_args: ToolResult.ok(
+        lambda *_args, **_kwargs: ToolResult.ok(
             "places",
             [
                 PlaceCandidate(
@@ -290,6 +356,7 @@ def test_search_plan_deduplicates_and_bounds_flight_queries():
         destination="Tokyo",
         start_date="2099-10-01",
         requested_services=["flights"],
+        flight_type="one_way",
     )
     plan = build_search_plan(request)
     plan.flight_queries = [
@@ -342,7 +409,7 @@ def test_partial_failure_keeps_successful_attractions(monkeypatch):
     )
     monkeypatch.setattr(
         "travel_agent.workflows.search.search_attractions",
-        lambda *_args: ToolResult.ok(
+        lambda *_args, **_kwargs: ToolResult.ok(
             "places",
             [
                 PlaceCandidate(

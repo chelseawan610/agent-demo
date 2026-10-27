@@ -8,6 +8,24 @@ DEMO_NOTICE = (
 )
 
 
+def render_service_menu() -> str:
+    """Explain the supported entry types before the user writes a request."""
+
+    return "\n".join(
+        [
+            "# 请选择旅行服务类型",
+            "",
+            "1. 完整旅行规划（出发城市、目的地、出发日期、游玩天数/回程日期）",
+            "2. 往返机票查询（出发城市、目的地、去程日期、回程日期/游玩天数）",
+            "3. 酒店查询（目的地、入住日期、晚数/退房日期）",
+            "4. 攻略或活动查询（目的地；天数可选）",
+            "",
+            "也可以直接输入组合需求，例如“机票和酒店”或“酒店和攻略”。",
+            "不确定时可选 1；系统仍会根据你的自然语言调整服务范围。",
+        ]
+    )
+
+
 def render_trip_request(request: TripRequest) -> str:
     """Render missing intake fields before any travel tool is called."""
 
@@ -22,8 +40,7 @@ def render_trip_request(request: TripRequest) -> str:
     lines.extend(
         [
             "",
-            "可选信息（不提供也可以）：旅行天数/住宿晚数、预算、返程日期、交通方式和兴趣偏好；"
-            "系统会使用合理默认值或留空。",
+            "可选信息：预算、交通方式和兴趣偏好；时长边界请按上面的请求类型补充。",
             "",
             DEMO_NOTICE,
         ]
@@ -55,8 +72,43 @@ def render_trip_plan(plan: TripPlan) -> str:
         lines.extend(["", DEMO_NOTICE])
         return "\n".join(lines)
 
-    lines = [f"# {plan.destination} {plan.days}日旅行计划", "", plan.summary]
+    title_suffix = "（部分数据不可用）" if plan.status == "partial" else ""
+    title = (
+        f"{plan.destination} {plan.days}日旅行计划"
+        if plan.days is not None
+        else f"{plan.destination} 航班候选"
+    )
+    lines = [f"# {title}{title_suffix}", "", plan.summary]
+    if plan.generation_source == "deterministic_fallback":
+        lines.extend(
+            [
+                "",
+                "> 结构化叙述生成不可用；本页事实由已成功返回的工具结果确定性组装。",
+            ]
+        )
+    elif plan.generation_source == "offline":
+        lines.extend(
+            [
+                "",
+                "> 离线模式：未调用语言模型；本页由本地确定性逻辑组装。",
+            ]
+        )
+    if plan.status == "partial":
+        lines.extend(
+            [
+                "",
+                "> 本次 workflow 已完成，但部分数据源暂时不可用；下方仅展示成功获取并核验的结果。",
+            ]
+        )
     if plan.budget is not None:
+        # The budget is recorded but no supplier is filtered by it: flight and
+        # hotel candidates come from the demo adapter, which has no inventory
+        # to price against. Saying so prevents a reader from assuming the plan
+        # was checked against this number.
+        budget_caveat = (
+            "本次预算仅被记录，未用于筛选候选；航班和酒店为演示数据，"
+            "价格不代表实时报价。"
+        )
         if plan.budget.amount is not None:
             lines.extend(
                 [
@@ -64,10 +116,13 @@ def render_trip_plan(plan: TripPlan) -> str:
                     "## 预算",
                     f"{plan.budget.amount:g} {plan.budget.currency}"
                     f"（{plan.budget.period or 'total'}）",
+                    budget_caveat,
                 ]
             )
         elif plan.budget.level is not None:
-            lines.extend(["", "## 预算", f"预算档位：{plan.budget.level}"])
+            lines.extend(
+                ["", "## 预算", f"预算档位：{plan.budget.level}", budget_caveat]
+            )
     if plan.flights:
         lines.extend(["", "## 航班选项"])
         lines.extend(
@@ -143,9 +198,13 @@ def render_trip_plan(plan: TripPlan) -> str:
                     if activity.website
                     else ""
                 )
+                route_note = (
+                    "；区域中心坐标，非到访入口，未用于路线"
+                    if not activity.route_eligible else ""
+                )
                 lines.append(
                     f"- {activity.name}{detail}{source}{venue}{cuisine}"
-                    f"{hours}{duration}{website}"
+                    f"{hours}{duration}{website}{route_note}"
                 )
     if plan.food:
         lines.extend(["", "## 餐饮参考"])

@@ -100,13 +100,32 @@ def test_photon_and_overpass_normal_empty_and_timeout(monkeypatch):
         ]
     }
     monkeypatch.setattr(places, "HTTP_CLIENT", FakeClient(photon_payload))
-    resolved = places.resolve_preference_place("东京塔", "Tokyo Tower Tokyo")
+    resolved = places.resolve_preference_place(
+        "东京塔", "Tokyo Tower Tokyo", place_name="Tokyo Tower", place_type="landmark"
+    )
     assert resolved.status == "ok"
     assert resolved.data.name == "东京塔"
     assert resolved.data.opening_hours == "Mo-Su 09:00-22:00"
     assert resolved.data.website == "https://example.test/tower"
     assert resolved.data.address == "Example Street Tokyo"
     assert resolved.data.wheelchair_accessible is True
+
+    misleading_payload = {
+        "features": [
+            {
+                "geometry": {"coordinates": [139.6992, 35.6563]},
+                "properties": {"name": "Cerulean Tower Tokyo Hotel"},
+            }
+        ]
+    }
+    monkeypatch.setattr(places, "HTTP_CLIENT", FakeClient(misleading_payload))
+    misleading = places.resolve_preference_place(
+        "东京塔",
+        "Tokyo Tower Tokyo",
+        GeoPoint(latitude=35.6895, longitude=139.6917),
+    )
+    assert misleading.status == "unavailable"
+    assert misleading.error_code == "not_relevant"
 
     far_payload = {
         "features": [
@@ -181,6 +200,28 @@ def test_photon_and_overpass_normal_empty_and_timeout(monkeypatch):
     assert food.data[0].category == "restaurant"
     assert food.data[0].cuisine == "sushi; japanese"
     assert food.data[0].venue_type == "mixed"
+
+    filtered_food = places.search_food(
+        "Tokyo",
+        GeoPoint(latitude=35, longitude=139),
+        1000,
+        3,
+        ["寿司"],
+        ["sushi restaurants in Tokyo"],
+    )
+    assert filtered_food.status == "ok"
+    assert [item.name for item in filtered_food.data] == ["Demo Sushi"]
+
+    unmatched_food = places.search_food(
+        "Tokyo",
+        GeoPoint(latitude=35, longitude=139),
+        1000,
+        3,
+        ["拉面"],
+        ["ramen restaurants in Tokyo"],
+    )
+    assert unmatched_food.status == "ok"
+    assert unmatched_food.data == []
 
     monkeypatch.setattr(
         places, "HTTP_CLIENT", FakeClient(error=ExternalToolError("timeout", "slow"))

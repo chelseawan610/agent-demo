@@ -32,6 +32,22 @@ def test_markdown_retriever_preserves_source_and_section(tmp_path):
     assert hits[0].score > 0
 
 
+def test_markdown_retriever_scope_excludes_other_destination_sections(tmp_path):
+    (tmp_path / "guide.md").write_text(
+        "# Local guide\n\n## Tokyo\n\nTokyo Tower is a landmark.\n\n"
+        "## Seoul\n\nSeoul has museums.\n\n"
+        "## Planning principles\n\nGroup nearby places together.\n",
+        encoding="utf-8",
+    )
+    knowledge = MarkdownKnowledgeBase(tmp_path)
+
+    hits = knowledge.search("Tokyo Seoul museums", scope="Seoul", top_k=5)
+
+    assert hits
+    assert all(hit.section != "Tokyo" for hit in hits)
+    assert any(hit.section == "Seoul" for hit in hits)
+
+
 def test_search_plan_builds_rag_query_from_destination_and_preferences():
     request = TripRequest(
         destination="Tokyo",
@@ -43,6 +59,7 @@ def test_search_plan_builds_rag_query_from_destination_and_preferences():
     plan = build_search_plan(request)
 
     assert plan.knowledge_query == "Tokyo Tokyo Tower anime activities guide"
+    assert plan.knowledge_scope == "Tokyo"
     assert plan.knowledge_top_k == 5
     assert plan.knowledge_max_chars == 4500
 

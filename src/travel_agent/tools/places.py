@@ -1,8 +1,12 @@
+import os
+import re
+import unicodedata
 from math import asin, cos, radians, sin, sqrt
 
 from agent_framework import tool
 
 from travel_agent.schemas.evidence import GeoPoint, PlaceCandidate, ToolResult
+from travel_agent.schemas.request import PlaceType
 from travel_agent.tools.http import ExternalToolError, HTTP_CLIENT
 
 
@@ -11,6 +15,8 @@ OVERPASS_ENDPOINTS = (
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
 )
+OVERPASS_TIMEOUT_SECONDS = float(os.getenv("TRAVEL_OVERPASS_TIMEOUT_SECONDS", "8"))
+OVERPASS_ATTEMPTS = max(1, int(os.getenv("TRAVEL_OVERPASS_ATTEMPTS", "1")))
 
 
 @tool(approval_mode="never_require")
@@ -18,98 +24,80 @@ def resolve_preference_place(
     label: str,
     search_query: str,
     destination_point: GeoPoint | None = None,
+    place_name: str | None = None,
+    place_type: PlaceType = "other",
 ) -> ToolResult[PlaceCandidate]:
-    """Resolve one user preference with Photon's OpenStreetMap geocoder."""
+    """Resolve a named entity using typed intent, exact identity, and geography.
+
+    Language interpretation belongs to Intake. Photon receives its search query
+    and destination bias; this adapter checks provider names and OSM categories.
+    A shared word or a nearby business is never sufficient identity evidence.
+    """
 
     print(
         f"[tool] resolve_preference_place(label={label!r}, "
-        f"search_query={search_query!r})"
+        f"search_query={search_query!r}, place_type={place_type!r})"
     )
     try:
-        payload = HTTP_CLIENT.get_json(
-            "https://photon.komoot.io/api/",
-            {"q": search_query, "limit": 5, "lang": "en"},
-            min_interval_seconds=1.0,
-        )
-        features = payload.get("features", [])
-        if not features:
-            short_query = _short_place_query(search_query)
-            if short_query != search_query:
-                payload = HTTP_CLIENT.get_json(
-                    "https://photon.komoot.io/api/",
-                    {"q": short_query, "limit": 5, "lang": "en"},
-                    min_interval_seconds=1.0,
-                )
-                features = payload.get("features", [])
-            if not features:
-                return ToolResult[PlaceCandidate].unavailable(
-                    "Photon",
-                    "not_found",
-                    f"未定位偏好地点：{label}",
-                    attribution=OSM_ATTRIBUTION,
-                )
-        if destination_point is None:
-            feature = features[0]
-        else:
-            nearby = [
-                item
-                for item in features
-                if _distance_km(
-                    destination_point,
-                    _feature_point(item),
-                ) <= 100
-            ]
-            if not nearby:
-                return ToolResult[PlaceCandidate].unavailable(
-                    "Photon",
-                    "out_of_area",
-                    f"未找到位于目的地附近的偏好地点：{label}",
-                    attribution=OSM_ATTRIBUTION,
-                )
-            relevant = [
-                item
-                for item in nearby
-                if _query_match_score(item, search_query) is not None
-            ]
-            short_query = _short_place_query(search_query)
-            if not relevant and short_query != search_query:
-                # Photon can rank a long "place in city" query poorly. Retry
-                # the named place itself before declaring the preference
-                # unavailable; this remains bounded to one provider retry.
-                payload = HTTP_CLIENT.get_json(
-                    "https://photon.komoot.io/api/",
-                    {"q": short_query, "limit": 5, "lang": "en"},
-                    min_interval_seconds=1.0,
-                )
-                features = payload.get("features", [])
-                nearby = [
-                    item
-                    for item in features
-                    if _distance_km(
-                        destination_point,
-                        _feature_point(item),
-                    ) <= 100
-                ]
-                relevant = [
-                    item
-                    for item in nearby
-                    if _query_match_score(item, short_query) is not None
-                ]
-            if not relevant:
-                return ToolResult[PlaceCandidate].unavailable(
-                    "Photon",
-                    "not_relevant",
-                    f"目的地附近没有名称匹配的偏好地点：{label}",
-                    attribution=OSM_ATTRIBUTION,
-                )
-            nearby = relevant
-            feature = min(
-                nearby,
-                key=lambda item: (
-                    _query_match_score(item, search_query),
-                    _distance_km(destination_point, _feature_point(item)),
-                ),
+        queries = list(dict.fromkeys(query for query in (search_query, place_name) if query))
+        identities = {
+            _normalized_place_name(name)
+            for name in (label, place_name, search_query)
+            if name and _normalized_place_name(name)
+        }
+        error_code = "not_found"
+        relevant: list[dict] = []
+        for query in queries[:2]:
+            params: dict[str, object] = {"q": query, "limit": 5, "lang": "en"}
+            if destination_point is not None:
+                params.update(lat=destination_point.latitude, lon=destination_point.longitude)
+            payload = HTTP_CLIENT.get_json(
+                "https://photon.komoot.io/api/", params, min_interval_seconds=1.0
             )
+            features = payload["features"]
+            if not isinstance(features, list):
+                raise ValueError("Photon features must be a list")
+            for item in features:
+                # One broken candidate must not hide a valid later candidate.
+                try:
+                    point = _feature_point(item)
+                    properties = item["properties"]
+                    if not isinstance(properties, dict):
+                        raise ValueError("Photon properties must be an object")
+                    if destination_point is not None and _distance_km(destination_point, point) > 100:
+                        error_code = "out_of_area"
+                        continue
+                    names = {
+                        _normalized_place_name(properties[key])
+                        for key in ("name", "name:en", "name:local")
+                        if isinstance(properties.get(key), str)
+                    }
+                    if not names & identities:
+                        error_code = "not_relevant"
+                        continue
+                    if not _matches_place_type(properties, place_type):
+                        error_code = "type_mismatch"
+                        continue
+                    relevant.append(item)
+                except (KeyError, IndexError, TypeError, ValueError):
+                    error_code = "invalid_response"
+            if relevant:
+                break
+        if not relevant:
+            return ToolResult[PlaceCandidate].unavailable(
+                "Photon", error_code,
+                f"未找到名称、类型和目的地范围均可核验的地点：{label}；未用相似商家替代。",
+                attribution=OSM_ATTRIBUTION,
+            )
+        if any(_distance_km(_feature_point(relevant[0]), _feature_point(item)) > 1 for item in relevant[1:]):
+            return ToolResult[PlaceCandidate].unavailable(
+                "Photon", "ambiguous_place", f"存在多个同名且相距较远的地点，需确认具体位置：{label}",
+                attribution=OSM_ATTRIBUTION,
+            )
+        feature = min(
+            relevant,
+            key=lambda item: _distance_km(destination_point, _feature_point(item)) if destination_point else 0,
+        )
         properties = feature.get("properties", {})
         longitude, latitude = feature["geometry"]["coordinates"]
         osm_type = properties.get("osm_type", "unknown")
@@ -123,12 +111,14 @@ def resolve_preference_place(
                 provider_id=f"{osm_type}:{osm_id}",
                 source="Photon / OpenStreetMap",
                 verified=True,
+                route_eligible=_route_eligible(properties),
                 description=properties.get("name", ""),
                 opening_hours=properties.get("opening_hours"),
                 website=properties.get("website") or properties.get("url"),
                 address=_photon_address(properties),
                 phone=properties.get("phone"),
                 wheelchair_accessible=_optional_bool(properties.get("wheelchair")),
+                venue_type=_venue_type(properties, properties.get("osm_value", "")),
                 opening_hours_source=(
                     properties.get("source:opening_hours")
                     or properties.get("opening_hours:url")
@@ -151,6 +141,40 @@ def resolve_preference_place(
 def _feature_point(feature: dict) -> GeoPoint:
     longitude, latitude = feature["geometry"]["coordinates"]
     return GeoPoint(latitude=latitude, longitude=longitude)
+
+
+def _normalized_place_name(name: str) -> str:
+    """Compare identity with Unicode/case/spacing normalization, not keywords."""
+
+    return "".join(character for character in unicodedata.normalize("NFKC", name).casefold() if character.isalnum())
+
+
+def _matches_place_type(properties: dict, expected: PlaceType) -> bool:
+    """Check machine-readable OSM metadata against Intake's semantic category."""
+
+    key, value = properties.get("osm_key"), properties.get("osm_value")
+    categories = {
+        "waterfront": {("natural", "bay"), ("natural", "strait"), ("natural", "water"), ("natural", "beach"), ("waterway", "river"), ("waterway", "dock"), ("man_made", "pier"), ("leisure", "marina")},
+        "museum": {("tourism", "museum"), ("tourism", "gallery")},
+        "park": {("leisure", "park"), ("leisure", "garden"), ("leisure", "nature_reserve"), ("boundary", "national_park")},
+        "restaurant": {("amenity", "restaurant"), ("amenity", "cafe"), ("amenity", "fast_food"), ("amenity", "food_court")},
+        "hotel": {("tourism", "hotel"), ("tourism", "hostel"), ("tourism", "guest_house"), ("tourism", "motel")},
+    }
+    if expected in categories:
+        return (key, value) in categories[expected]
+    # Unknown metadata cannot prove a specific category. For broad landmark
+    # requests, prevent a same-named business or housing development replacing it.
+    return value not in {"restaurant", "cafe", "fast_food", "hotel", "hostel", "residential"}
+
+
+def _route_eligible(properties: dict) -> bool:
+    """A water/area centroid is not a verified road-accessible entrance."""
+
+    return (properties.get("osm_key"), properties.get("osm_value")) not in {
+        ("natural", "bay"), ("natural", "strait"), ("natural", "water"),
+        ("natural", "sea"), ("waterway", "river"), ("waterway", "dock"),
+        ("boundary", "protected_area"),
+    }
 
 
 def _optional_bool(value: object) -> bool | None:
@@ -191,45 +215,15 @@ def _distance_km(first: GeoPoint, second: GeoPoint) -> float:
     return 6371 * 2 * asin(sqrt(value))
 
 
-def _query_match_score(feature: dict, search_query: str) -> int | None:
-    """Prefer a named POI match over a nearby place sharing one word."""
+def _name_tokens(value: str) -> list[str]:
+    """Tokenize provider names without assuming a particular user language."""
 
-    properties = feature.get("properties", {})
-    haystack = " ".join(
-        str(properties.get(key, ""))
-        for key in ("name", "name:en", "name:local")
-    ).casefold()
-    stop_words = {"the", "in", "of", "and", "at"}
-    tokens = [
+    return [
         token.casefold()
-        for token in search_query.replace(",", " ").split()
-        if len(token) > 2 and token.casefold() not in stop_words
+        for token in re.findall(
+            r"[a-z0-9]+|[\u4e00-\u9fff]+|[\u3040-\u30ff]+", value.casefold()
+        )
     ]
-    if not tokens:
-        return None
-    if len(tokens) == 1:
-        return 0 if haystack.startswith(tokens[0]) else None
-    adjacent_phrases = [
-        " ".join(tokens[index : index + 2])
-        for index in range(len(tokens) - 1)
-    ]
-    if any(phrase in haystack for phrase in adjacent_phrases):
-        return 0
-    if haystack.startswith(tokens[0]):
-        return 1
-    return None
-
-
-def _short_place_query(search_query: str) -> str:
-    """Strip provider qualifiers so a named POI can be retried once."""
-
-    stop_words = {"the", "in", "of", "and", "at"}
-    tokens = [
-        token
-        for token in search_query.replace(",", " ").split()
-        if token.casefold() not in stop_words
-    ]
-    return " ".join(tokens[:2]) if len(tokens) > 1 else search_query
 
 
 def _venue_type(tags: dict, category: str) -> str:
@@ -242,7 +236,7 @@ def _venue_type(tags: dict, category: str) -> str:
         return "outdoor"
     if category in {"museum", "gallery", "aquarium", "planetarium", "cinema", "theatre"}:
         return "indoor"
-    if category in {"park", "garden", "beach", "viewpoint", "nature_reserve"}:
+    if category in {"park", "garden", "beach", "viewpoint", "nature_reserve", "bay", "strait", "water", "river"}:
         return "outdoor"
     if category in {"restaurant", "cafe", "fast_food", "food_court"}:
         outdoor_seating = str(tags.get("outdoor_seating", "")).casefold()
@@ -298,6 +292,9 @@ def _fetch_overpass(query: str) -> dict:
                 endpoint,
                 {"data": query},
                 min_interval_seconds=1.0,
+                timeout_seconds=OVERPASS_TIMEOUT_SECONDS,
+                attempts=OVERPASS_ATTEMPTS,
+                backoff_base_seconds=0.5,
             )
             break
         except ExternalToolError as error:
@@ -315,6 +312,7 @@ def search_attractions(
     center: GeoPoint,
     radius_meters: int = 8000,
     limit: int = 9,
+    venue_mix: str = "unspecified",
 ) -> ToolResult[list[PlaceCandidate]]:
     """Find named attractions and museums around a destination with Overpass."""
 
@@ -323,10 +321,21 @@ def search_attractions(
         f"radius_meters={radius_meters!r}, limit={limit!r})"
     )
     overpass_limit = max(limit * 3, limit)
-    query = (
-        "[out:json][timeout:20];"
-        f'nwr["tourism"~"^(attraction|museum|gallery)$"]'
+    tourism_values = "attraction|museum|gallery|aquarium|viewpoint"
+    if venue_mix == "indoor":
+        tourism_values = "museum|gallery|aquarium"
+    selectors = [
+        f'nwr["tourism"~"^({tourism_values})$"]'
         f"(around:{radius_meters},{center.latitude},{center.longitude});"
+    ]
+    if venue_mix in {"balanced", "outdoor"}:
+        selectors.append(
+            'nwr["leisure"~"^(park|garden)$"]'
+            f"(around:{radius_meters},{center.latitude},{center.longitude});"
+        )
+    query = (
+        f"[out:json][timeout:{int(OVERPASS_TIMEOUT_SECONDS)}];"
+        f"({''.join(selectors)});"
         f"out center tags {overpass_limit};"
     )
     try:
@@ -350,6 +359,20 @@ def search_attractions(
             or item.get("tags", {}).get("wikipedia")
         }
         candidates.sort(key=lambda item: item.provider_id not in documented_ids)
+        if venue_mix in {"indoor", "outdoor"}:
+            candidates = [item for item in candidates if item.venue_type == venue_mix]
+        elif venue_mix == "balanced":
+            # Apply before truncation so museums cannot crowd every known
+            # outdoor candidate out of the provider's bounded result pool.
+            indoor = [item for item in candidates if item.venue_type == "indoor"]
+            outdoor = [item for item in candidates if item.venue_type == "outdoor"]
+            other = [item for item in candidates if item.venue_type not in {"indoor", "outdoor"}]
+            candidates = [
+                pool[index]
+                for index in range(max(len(indoor), len(outdoor)))
+                for pool in (indoor, outdoor)
+                if index < len(pool)
+            ] + other
         return ToolResult[list[PlaceCandidate]].ok(
             "Overpass API", candidates[:limit], attribution=OSM_ATTRIBUTION
         )
@@ -371,6 +394,8 @@ def search_food(
     center: GeoPoint,
     radius_meters: int = 5000,
     limit: int = 6,
+    preferences: list[str] | None = None,
+    preference_queries: list[str] | None = None,
 ) -> ToolResult[list[PlaceCandidate]]:
     """Find restaurants and cafes; prices and reservations are not inferred."""
 
@@ -380,7 +405,7 @@ def search_food(
     )
     overpass_limit = max(limit * 3, limit)
     query = (
-        "[out:json][timeout:20];"
+        f"[out:json][timeout:{int(OVERPASS_TIMEOUT_SECONDS)}];"
         f'nwr["amenity"~"^(restaurant|cafe|fast_food|food_court)$"]'
         f"(around:{radius_meters},{center.latitude},{center.longitude});"
         f"out center tags {overpass_limit};"
@@ -402,6 +427,20 @@ def search_food(
             or item.get("tags", {}).get("wikipedia")
         }
         candidates.sort(key=lambda item: item.provider_id not in documented_ids)
+        requested_queries = [
+            query.strip()
+            for query in [*(preferences or []), *(preference_queries or [])]
+            if query and query.strip()
+        ]
+        if requested_queries:
+            # OSM exposes cuisine as a structured tag. Only keep a candidate
+            # when one of those tags overlaps a provider-friendly preference
+            # query; a missing tag is treated as unknown, not as a match.
+            candidates = [
+                candidate
+                for candidate in candidates
+                if _matches_food_preference(candidate, requested_queries)
+            ]
         return ToolResult[list[PlaceCandidate]].ok(
             "Overpass API", candidates[:limit], attribution=OSM_ATTRIBUTION
         )
@@ -426,3 +465,20 @@ def _osm_address(tags: dict) -> str | None:
     ]
     address = " ".join(str(part) for part in parts if part)
     return address or None
+
+
+def _matches_food_preference(
+    candidate: PlaceCandidate,
+    requested_queries: list[str],
+) -> bool:
+    """Match only explicit OSM cuisine tags to the typed food query."""
+
+    if not candidate.cuisine:
+        return False
+    cuisine_tokens = set(_name_tokens(candidate.cuisine))
+    requested_tokens = {
+        token
+        for query in requested_queries
+        for token in _name_tokens(query)
+    }
+    return bool(cuisine_tokens & requested_tokens)

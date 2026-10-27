@@ -50,6 +50,13 @@ def write_run_record(
             "mode": mode,
             "model": model,
             "fallback_used": fallback_used,
+            # Keep the historical field above, but expose the two different
+            # meanings explicitly for new runs.
+            "model_fallback_used": fallback_used,
+            "deterministic_fallback_used": (
+                getattr(final_plan, "generation_source", None)
+                == "deterministic_fallback"
+            ),
             "status": status,
             "request": _dump(request),
             "search_plan": _dump(search_plan),
@@ -63,6 +70,9 @@ def write_run_record(
                     "status": getattr(final_plan, "status", None),
                     "destination": getattr(final_plan, "destination", None),
                     "days": getattr(final_plan, "days", None),
+                    "generation_source": getattr(
+                        final_plan, "generation_source", None
+                    ),
                 }
                 if final_plan is not None
                 else None

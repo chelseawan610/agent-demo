@@ -3,6 +3,7 @@ from datetime import date, timedelta
 from math import cos, radians
 
 from travel_agent.schemas.evidence import PlaceCandidate, ToolResult
+from travel_agent.schemas.request import PreferenceSpec
 from travel_agent.schemas.trip import ActivityOption
 from travel_agent.tools.opening_hours import opening_status
 
@@ -14,6 +15,8 @@ def assign_activities(
     attraction_result: ToolResult[list[PlaceCandidate]] | None,
     *,
     preference_labels: list[str] | None = None,
+    preference_details: Sequence[PreferenceSpec] | None = None,
+    venue_mix: str = "unspecified",
     start_date: date | None = None,
     day_capacities: Sequence[int] | None = None,
     rain_probability_by_day: Sequence[int | None] | None = None,
@@ -31,20 +34,21 @@ def assign_activities(
         return []
     preference_labels = preference_labels or []
     preferred: list[PlaceCandidate] = []
-    for index, result in enumerate(preference_results):
-        if result.status == "ok" and result.data is not None:
-            preferred.append(result.data)
-        elif index < len(preference_labels):
-            label = preference_labels[index]
-            preferred.append(
-                PlaceCandidate(
-                    name=label,
-                    category="user_preference",
-                    provider_id=f"user-preference:{index}:{label}",
-                    source="用户明确偏好（位置未核验）",
-                    verified=False,
-                )
-            )
+    if preference_details is not None:
+        # The executor preserves the order of preference_details. Only a
+        # concrete ``place`` can become a map stop. Semantic interests such
+        # as venue_mix remain constraints and never become fake activities.
+        for detail, result in zip(preference_details, preference_results):
+            if detail.kind != "place":
+                continue
+            if result.status == "ok" and result.data is not None:
+                preferred.append(result.data)
+    else:
+        # Backward-compatible direct callers can still pass provider results
+        # without metadata. Failed lookups are never fake POIs.
+        for result in preference_results:
+            if result.status == "ok" and result.data is not None:
+                preferred.append(result.data)
 
     attractions = (
         attraction_result.data
@@ -53,6 +57,10 @@ def assign_activities(
         and attraction_result.data is not None
         else []
     )
+    if venue_mix in {"indoor", "outdoor"}:
+        # A strict venue constraint needs positive provider evidence. Explicit
+        # named places remain visible even if they conflict with this preference.
+        attractions = [place for place in attractions if place.venue_type == venue_mix]
     ordered_places = _deduplicate([*preferred, *attractions])
     capacities = _build_capacities(days, len(ordered_places), day_capacities)
 
@@ -64,6 +72,7 @@ def assign_activities(
             buckets,
             capacities,
             eligible_days,
+            venue_mix=venue_mix,
             rain_probability_by_day=rain_probability_by_day,
         )
         if target_day is None:
@@ -91,6 +100,7 @@ def assign_activities(
                     provider_id=place.provider_id,
                     source=place.source,
                     verified=place.verified,
+                    route_eligible=place.route_eligible,
                     opening_hours=place.opening_hours,
                     opening_status=status,
                     website=place.website,
@@ -161,6 +171,7 @@ def _choose_day(
     capacities: list[int],
     eligible_days: list[int],
     *,
+    venue_mix: str = "unspecified",
     rain_probability_by_day: Sequence[int | None] | None = None,
 ) -> int | None:
     available = [
@@ -169,23 +180,56 @@ def _choose_day(
     if not available:
         return None
 
-    def score(day: int) -> tuple[int, int, float, int]:
+    def score(day: int) -> tuple[int, int, int, float, int]:
         bucket = buckets[day]
         rain_penalty = _weather_penalty(
             place,
             day,
             rain_probability_by_day,
         )
+        mix_penalty = _venue_mix_penalty(place, bucket, venue_mix)
         if not bucket or place.point is None:
-            return (rain_penalty, len(bucket), 0.0, day)
+            return (rain_penalty, mix_penalty, len(bucket), 0.0, day)
         distances = [
             _approx_distance_km(place, existing)
             for existing in bucket
             if existing.point is not None
         ]
-        return (rain_penalty, len(bucket), min(distances, default=0.0), day)
+        return (
+            rain_penalty,
+            mix_penalty,
+            len(bucket),
+            min(distances, default=0.0),
+            day,
+        )
 
     return min(available, key=score)
+
+
+def _venue_mix_penalty(
+    place: PlaceCandidate,
+    bucket: list[PlaceCandidate],
+    venue_mix: str,
+) -> int:
+    """Prefer complementary venue types without guessing unknown metadata."""
+
+    if venue_mix != "balanced" or place.venue_type not in {"indoor", "outdoor"}:
+        return 0
+    if not bucket:
+        # Pairing with an existing complementary venue is preferred to opening
+        # another empty day when provider metadata is explicit.
+        return 1
+    known_types = {
+        item.venue_type
+        for item in bucket
+        if item.venue_type in {"indoor", "outdoor"}
+    }
+    if not known_types:
+        return 1
+    opposite = "indoor" if place.venue_type == "outdoor" else "outdoor"
+    if opposite in known_types:
+        return 0
+    return 2
 
 
 def _weather_penalty(
@@ -228,6 +272,8 @@ def _default_visit_minutes(category: str) -> int:
 
 
 def _activity_note(place: PlaceCandidate, status: str) -> str:
+    if not place.route_eligible:
+        return "该坐标为区域中心，并非已核验的到访入口；未用于道路或公共交通路线。"
     if status == "open" and place.opening_hours:
         return (
             f"营业时间：{place.opening_hours}（来自 "

@@ -7,7 +7,7 @@ from travel_agent.config import Settings
 TRIP_FORMAT_INSTRUCTIONS = """
 Return only one valid JSON object. Do not use Markdown fences and do not add
 explanations before or after the JSON. The object must have these fields:
-status (complete or needs_clarification), destination (string), days (integer),
+status (complete, partial, or needs_clarification), destination (string), days (integer or null for flight-only requests),
 summary (string), budget (object or null, with amount, currency, level, and
 period), preferences (array of strings), missing_information (array of strings), flights (array), hotels
 (array), food (array of place candidates), itinerary (array of objects with day, title, and activities), and notes
@@ -24,7 +24,9 @@ when they are present. Never output schema field names as activity values.
 Weather, places, routes, search_links, tool_status, data_sources, and
 knowledge_sources are typed evidence fields. Use empty arrays when absent and
 never invent their contents. knowledge_sources are citations copied from the
-local retrieval result; do not create new citations.
+    local retrieval result; do not create new citations. Do not mention an
+    absent optional section in notes when that service was not requested;
+    describe only requested services and their available evidence.
 """.strip()
 
 
@@ -48,6 +50,8 @@ def create_travel_agent(model: str | None = None) -> Agent:
             "Respect the requested service scope and preserve every explicit "
             "preference, such as a named landmark. Use reasonable defaults for "
             "optional preferences, but never invent a budget level. "
+            "Do not mention absent optional services in notes when the user did "
+            "not request them. "
             "If essential information is missing, ask for it instead of "
             "inventing values or calling tools with guessed arguments. "
             "Interpret dates written as YY.MM.DD, such as 26.10.1, as "
@@ -60,6 +64,9 @@ def create_travel_agent(model: str | None = None) -> Agent:
             "references; do not invent prices, ratings, reservations, or menus. "
             "If both driving and public-transit route evidence are present, show "
             "both separately; never describe a driving estimate as public transit."
+            " For the normal structured workflow, the response schema is a small "
+            "TripNarrative containing only summary and daily_titles; do not try "
+            "to reproduce the full TripPlan or any tool evidence in that response."
         ),
         tools=[],
         default_options={
@@ -116,6 +123,43 @@ def create_trip_reviewer(model: str | None = None) -> Agent:
         default_options={
             "temperature": 0.0,
             "max_tokens": 1200,
+            "extra_body": (
+                {"reasoning": {"effort": settings.reasoning_effort}}
+                if settings.reasoning_effort
+                else {}
+            ),
+        },
+    )
+
+
+def create_follow_up_router(model: str | None = None) -> Agent:
+    """Create the small classifier that routes a turn after a delivered plan.
+
+    It is deliberately cheap and narrow: it chooses one enum value and never
+    sees or edits travel facts. Keeping it separate from the planner is what
+    lets a presentation-only request skip every external provider.
+    """
+
+    settings = Settings.from_env(model=model)
+    return Agent(
+        client=create_client(settings, model=model),
+        name="FollowUpRouter",
+        instructions=(
+            "You classify one user message that arrives after a travel plan "
+            "was already delivered. Return only a FollowUpIntent JSON object. "
+            "Choose modify_request when any travel fact changes, such as "
+            "dates, trip length, destination, origin, budget, or which "
+            "services are wanted. Choose refine_narrative when the facts stay "
+            "the same and only the wording, language, level of detail, or "
+            "tone should change. Choose ask_about_plan for a question about "
+            "the plan that needs no change. Choose end when the user is "
+            "finished, and out_of_scope for booking, payment, or an unrelated "
+            "topic. When a message both asks and changes something, prefer "
+            "modify_request. Never answer the user here."
+        ),
+        default_options={
+            "temperature": 0.0,
+            "max_tokens": 200,
             "extra_body": (
                 {"reasoning": {"effort": settings.reasoning_effort}}
                 if settings.reasoning_effort

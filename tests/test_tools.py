@@ -2,6 +2,7 @@ from datetime import date
 
 from travel_agent.tools.activities import assign_activities
 from travel_agent.schemas.evidence import GeoPoint, PlaceCandidate, ToolResult
+from travel_agent.schemas.request import PreferenceSpec
 from travel_agent.tools.flights import search_flights
 from travel_agent.tools.hotels import search_hotels
 from travel_agent.schemas.trip import TripPlan
@@ -141,6 +142,81 @@ def test_activity_assignment_prefers_outdoor_places_on_drier_days():
         (1, "Indoor Museum"),
         (2, "Outdoor Park"),
     ]
+
+
+def test_interest_constraint_is_not_emitted_as_a_fake_activity():
+    result = assign_activities(
+        "香港",
+        2,
+        [ToolResult.skipped("Photon", "室内外结合是行程约束")],
+        ToolResult.ok(
+            "Overpass",
+            [
+                PlaceCandidate(
+                    name="Victoria Harbour",
+                    provider_id="harbour",
+                    source="Overpass / OpenStreetMap",
+                    point=GeoPoint(latitude=22.28, longitude=114.17),
+                )
+            ],
+        ),
+        preference_details=[
+            PreferenceSpec(
+                label="室内外结合",
+                search_query="indoor and outdoor attractions Hong Kong",
+                kind="interest",
+                planning_hint="venue_mix",
+            )
+        ],
+        venue_mix="balanced",
+    )
+
+    assert [item.name for item in result] == ["Victoria Harbour"]
+    assert all(item.name != "室内外结合" for item in result)
+
+
+def test_balanced_venue_mix_pairs_known_indoor_and_outdoor_candidates():
+    places = [
+        PlaceCandidate(
+            name="Outdoor Park",
+            provider_id="park",
+            source="test",
+            venue_type="outdoor",
+        ),
+        PlaceCandidate(
+            name="Indoor Museum",
+            provider_id="museum",
+            source="test",
+            venue_type="indoor",
+        ),
+        PlaceCandidate(
+            name="Outdoor Garden",
+            provider_id="garden",
+            source="test",
+            venue_type="outdoor",
+        ),
+        PlaceCandidate(
+            name="Indoor Gallery",
+            provider_id="gallery",
+            source="test",
+            venue_type="indoor",
+        ),
+    ]
+
+    result = assign_activities(
+        "Hong Kong",
+        2,
+        [],
+        ToolResult.ok("test", places),
+        venue_mix="balanced",
+        day_capacities=[2, 2],
+    )
+
+    by_day = {
+        day: {item.venue_type for item in result if item.day == day}
+        for day in (1, 2)
+    }
+    assert by_day == {1: {"indoor", "outdoor"}, 2: {"indoor", "outdoor"}}
 
 
 def test_flight_search_returns_demo_options():

@@ -52,11 +52,32 @@ class KnowledgeRetriever(Protocol):
         self,
         query: str,
         *,
+        scope: str | None = None,
         top_k: int = 5,
         min_score: float = 0.0,
         max_chars: int = 4500,
     ) -> list[KnowledgeHit]:
         ...
+
+
+GENERIC_SECTIONS = {
+    "how to use this reference",
+    "planning principles",
+    "data boundaries",
+}
+
+
+def section_matches_scope(section: str, scope: str | None) -> bool:
+    """Keep generic guidance and the normalized destination's section only."""
+
+    if not scope:
+        return True
+    normalized_section = " ".join(section.casefold().split())
+    if normalized_section in GENERIC_SECTIONS:
+        return True
+    scope_tokens = set(tokenize(scope))
+    section_tokens = set(tokenize(section))
+    return bool(scope_tokens and scope_tokens & section_tokens)
 
 
 def split_markdown(path: Path) -> list[_Chunk]:
@@ -143,6 +164,7 @@ class MarkdownKnowledgeBase:
         self,
         query: str,
         *,
+        scope: str | None = None,
         top_k: int = 5,
         min_score: float = 0.0,
         max_chars: int = 4500,
@@ -150,12 +172,17 @@ class MarkdownKnowledgeBase:
         """Return ranked chunks; an empty index/query returns no evidence."""
 
         query_tokens = tokenize(query)
-        if not query_tokens or not self._chunks:
+        chunks = [
+            chunk
+            for chunk in self._chunks
+            if section_matches_scope(chunk.section, scope)
+        ]
+        if not query_tokens or not chunks:
             return []
         query_terms = set(query_tokens)
-        total_documents = len(self._chunks)
+        total_documents = len(chunks)
         scored: list[tuple[float, _Chunk, list[str]]] = []
-        for chunk in self._chunks:
+        for chunk in chunks:
             frequencies = Counter(chunk.tokens)
             document_length = len(chunk.tokens) or 1
             score = 0.0

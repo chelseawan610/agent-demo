@@ -78,6 +78,9 @@ class JsonHttpClient:
         *,
         min_interval_seconds: float = 0.0,
         cache_ttl_seconds: float | None = None,
+        timeout_seconds: float | None = None,
+        attempts: int | None = None,
+        backoff_base_seconds: float | None = None,
     ) -> Any:
         query = urlencode(params or {}, doseq=True)
         request_url = f"{url}?{query}" if query else url
@@ -96,14 +99,23 @@ class JsonHttpClient:
 
         host = request_url.split("/", 3)[2]
         last_error: ExternalToolError | None = None
-        for attempt in range(1, self.attempts + 1):
+        attempt_limit = max(1, attempts if attempts is not None else self.attempts)
+        request_timeout = (
+            self.timeout_seconds if timeout_seconds is None else max(0.1, timeout_seconds)
+        )
+        retry_backoff = (
+            self.backoff_base_seconds
+            if backoff_base_seconds is None
+            else max(0.0, backoff_base_seconds)
+        )
+        for attempt in range(1, attempt_limit + 1):
             self._throttle(host, min_interval_seconds)
             request = Request(
                 request_url,
                 headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
             )
             try:
-                with urlopen(request, timeout=self.timeout_seconds) as response:
+                with urlopen(request, timeout=request_timeout) as response:
                     payload = json.load(response)
                 with self._lock:
                     self._cache[request_url] = payload
@@ -145,10 +157,10 @@ class JsonHttpClient:
                 )
                 break
 
-            if attempt < self.attempts:
+            if attempt < attempt_limit:
                 delay = min(
                     self.max_backoff_seconds,
-                    self.backoff_base_seconds * (2 ** (attempt - 1)),
+                    retry_backoff * (2 ** (attempt - 1)),
                 )
                 if last_error and last_error.retry_after_seconds is not None:
                     delay = min(

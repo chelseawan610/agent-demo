@@ -2,33 +2,163 @@ import asyncio
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
 from travel_agent.agents.travel import (
+    create_follow_up_router,
     create_travel_agent,
     create_trip_formatter,
     create_trip_reviewer,
 )
 from travel_agent.agents.intake import create_intake_agent
-from travel_agent.app.output import format_plan, render_trip_plan, render_trip_request
+from travel_agent.app.output import (
+    format_plan,
+    render_service_menu,
+    render_trip_plan,
+    render_trip_request,
+)
 from travel_agent.app.run_log import new_run_id, write_run_record
 from travel_agent.app.trace import TokenPricing, TraceRecorder
 from travel_agent.clients.fallback import FallbackAgent
 from travel_agent.config import Settings
 from travel_agent.schemas.trip import TripPlan
 from travel_agent.schemas.request import TripRequest
-from travel_agent.memory.store import JsonMemoryStore
+from travel_agent.memory.store import JsonMemoryStore, durable_preferences
 from travel_agent.schemas.checkpoint import WorkflowCheckpoint
 from travel_agent.workflows.checkpoint import CheckpointStore
-from travel_agent.workflows.intake import collect_trip_request
+from travel_agent.workflows.gate import plan_with_invariant_gate
+from travel_agent.workflows.followup import (
+    answer_plan_question,
+    classify_follow_up,
+    looks_like_end,
+)
+from travel_agent.workflows.intake import (
+    apply_evidence_guards,
+    collect_trip_request,
+    extract_trip_request,
+    merge_trip_requests,
+)
 from travel_agent.workflows.offline import build_offline_trip_plan
-from travel_agent.workflows.prompts import build_planner_prompt
+from travel_agent.workflows.prompts import (
+    build_planner_prompt,
+    build_trip_narrative_prompt,
+)
 from travel_agent.workflows.maf import run_plan_review_workflow
 from travel_agent.workflows.trip_planning import plan_trip_structured
 from travel_agent.workflows.search import build_search_plan, execute_search_plan
 from travel_agent.quality import check_workflow_invariants
 from travel_agent.rag.retriever import KnowledgeRetriever
 from travel_agent.rag.vector import DEFAULT_EMBEDDING_MODEL, create_knowledge_retriever
+
+
+def _configure_stdio_encoding() -> None:
+    """Keep CLI input/output predictable for Chinese and English terminals.
+
+    A terminal can inherit a non-UTF-8 locale, or a redirected stream can be
+    created with a different encoding.  Python's text streams support a safe
+    runtime reconfiguration; streams that do not expose it are left alone.
+    """
+
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            # A notebook, test capture, or embedded host may reject runtime
+            # reconfiguration.  It should not prevent the workflow from run.
+            continue
+
+
+async def read_user_line(prompt: str) -> str:
+    """Read one line, echoing it when input is piped.
+
+    A terminal echoes what the user types, a pipe does not. A recorded
+    conversation is unreadable without the questions and answers interleaved,
+    so a scripted run echoes the line it consumed.
+    """
+
+    value = await asyncio.to_thread(input, prompt)
+    if not sys.stdin.isatty():
+        print(value, flush=True)
+    return value
+
+
+def friendly_error(error: Exception) -> str:
+    """Explain a failure in user terms; the raw cause stays in the run log."""
+
+    name = type(error).__name__
+    text = str(error)
+    if "Timeout" in name or "timeout" in text.lower():
+        return "模型响应超时。可以直接重试，或用 --model 换一个更快的模型。"
+    if "401" in text or "Authentication" in name or "Unauthorized" in text:
+        return "模型密钥无效，请检查 .env 里的 LLM_API_KEY。"
+    if "429" in text or "RateLimit" in name:
+        return "模型被限流了，稍后重试，或配置 --fallback-model。"
+    if "Validation" in name:
+        return "模型返回的结构不符合 schema，本次已记录到日志；重试或换模型通常可以解决。"
+    if "Connection" in name or "Connection" in text:
+        return "无法连接模型服务，请检查网络或 LLM_BASE_URL。"
+    return f"运行失败（{name}）。加 --debug 可以看完整信息。"
+
+
+def report_gate(outcome) -> None:
+    """Tell every user, not only --debug, when an invariant failed.
+
+    A violated contract is the one thing a reader cannot discover from the
+    plan itself, so it is printed on the normal path.
+    """
+
+    if outcome.regenerated:
+        print("（上一次生成未通过确定性检查，已重新生成一次）")
+    if outcome.degraded:
+        print("（重新生成后仍未通过，已改用工具证据直接组装）")
+    for check in outcome.failures:
+        print(f"⚠ 检查未通过 [{check.layer}/{check.category}] {check.name}：{check.message}")
+
+
+def report_review(plan) -> None:
+    """Surface a needs_revision verdict instead of burying it in the page.
+
+    The reviewer's opinion deliberately does not gate the release -- the
+    deterministic invariants do that -- but a verdict that only appears as a
+    line near the bottom of a long Markdown page is effectively ignored.
+    """
+
+    review = getattr(plan, "review", None)
+    if review is None or review.status != "needs_revision":
+        return
+    print("⚠ 只读复核认为本计划需要修订（不阻止输出，事实仍以工具结果为准）：")
+    for issue in review.issues or ["复核未给出具体问题。"]:
+        print(f"  - {issue}")
+
+
+def render_failure_summary(tool_results) -> str:
+    """Name the failing step, not just the fact that something failed.
+
+    Every tool call already carries a workflow stage and a normalized error
+    category, so the degraded step can be located without reading a provider
+    stack trace or the JSONL log.
+    """
+
+    failures = [
+        record
+        for record in getattr(tool_results, "tool_calls", [])
+        if record.status in {"error", "unavailable"}
+    ]
+    if not failures:
+        return "[debug] FailurePoints：无（所有工具调用成功或被显式跳过）"
+    lines = ["[debug] FailurePoints："]
+    for record in failures:
+        lines.append(
+            f"  stage={record.stage} tool={record.tool_name} "
+            f"provider={record.provider} status={record.status} "
+            f"category={record.error_category or record.error_code} "
+            f"retryable={record.retryable}"
+        )
+    return "\n".join(lines)
 
 
 def _build_knowledge_retriever(args: argparse.Namespace) -> KnowledgeRetriever | None:
@@ -44,11 +174,69 @@ def _build_knowledge_retriever(args: argparse.Namespace) -> KnowledgeRetriever |
     )
 
 
-async def ask_request_clarification(request: TripRequest) -> str:
-    """Show missing normalized fields and collect the user's answer."""
+# One natural question per missing field. ``missing_fields`` is already
+# computed deterministically by ``TripRequest.required_missing_fields``, so
+# asking like a person costs no extra model call; only the wording changes.
+CLARIFICATION_QUESTIONS = {
+    "目的地": "你想去哪个城市？",
+    "出发城市": "从哪个城市出发？",
+    "出发日期": "哪天出发？（例如 10月1号，或 2026-10-01）",
+    "入住日期": "哪天入住？（例如 10月1号）",
+    "游玩天数或回程/退房日期": "打算玩几天，或者哪天回来？",
+    "回程日期或游玩天数": "打算玩几天，或者哪天回来？",
+    "游玩天数或入住晚数/退房日期": "住几晚，或者哪天退房？",
+    "入住晚数或退房日期": "住几晚，或者哪天退房？",
+}
 
-    print(render_trip_request(request))
-    return await asyncio.to_thread(input, "请补充以上信息（直接回车结束）：")
+
+def build_clarification_question(request: TripRequest) -> str:
+    """Ask for the first missing field in words, not as a field dump."""
+
+    missing = request.missing_fields
+    if not missing:
+        return "还需要补充一点信息。"
+    head = missing[0]
+    question = CLARIFICATION_QUESTIONS.get(head, f"请补充{head}。")
+    if len(missing) > 1:
+        question += f"（如果方便，也可以一起说：{'、'.join(missing[1:])}）"
+    return question
+
+
+def make_clarification_asker(debug: bool = False):
+    """Build the interactive clarification callback used by intake."""
+
+    async def ask_request_clarification(request: TripRequest) -> str:
+        if debug:
+            # The normalized field dump stays available for teaching and
+            # evaluation, but it is no longer the user-facing question.
+            print(render_trip_request(request))
+        print(f"\n{build_clarification_question(request)}")
+        return await read_user_line("> ")
+
+    return ask_request_clarification
+
+
+SERVICE_TYPE_HINTS = {
+    "1": "完整旅行规划",
+    "2": "往返机票查询",
+    "3": "酒店查询",
+    "4": "攻略或活动查询",
+}
+
+
+async def ask_initial_request() -> str:
+    """Show the service menu, then keep the actual request in natural language."""
+
+    print(render_service_menu())
+    selection = await read_user_line("请选择编号，或直接输入你的旅行需求：")
+    selection = selection.strip()
+    if selection not in SERVICE_TYPE_HINTS:
+        return selection
+    details = await read_user_line("请补充具体需求：")
+    return (
+        f"用户选择服务类型：{SERVICE_TYPE_HINTS[selection]}\n"
+        f"用户具体需求：{details.strip()}"
+    )
 
 
 def _read_request_json(value: str) -> str:
@@ -149,7 +337,7 @@ async def run_offline(args: argparse.Namespace) -> None:
         run_id=args.run_id,
         mode="offline",
         model=None,
-        status="complete",
+        status=result.status,
         request=request,
         search_plan=search_plan,
         tool_results=tool_results,
@@ -178,6 +366,7 @@ async def run_offline(args: argparse.Namespace) -> None:
         for check in check_workflow_invariants(request, search_plan, tool_results, result):
             status = "PASS" if check.passed else "FAIL"
             print(f"[{status}] {check.name}: {check.message}")
+        print(render_failure_summary(tool_results))
 
     if args.output == "json":
         print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))
@@ -185,7 +374,8 @@ async def run_offline(args: argparse.Namespace) -> None:
         print(render_trip_plan(result))
 
 
-async def main() -> None:
+async def main() -> int:
+    _configure_stdio_encoding()
     parser = argparse.ArgumentParser(
         description="Run the travel planning agent",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -212,6 +402,16 @@ async def main() -> None:
         "--user-id",
         default="local-user",
         help="Memory 使用的本地用户键；多人共用时手动覆盖",
+    )
+    common.add_argument(
+        "--no-follow-up",
+        action="store_true",
+        help="输出计划后立即退出，不进入多轮修改；评测和脚本使用",
+    )
+    common.add_argument(
+        "--follow-up",
+        action="store_true",
+        help="即使输入不是终端也进入多轮修改；用于脚本化录制对话",
     )
 
     diagnostics = parser.add_argument_group("调试和评测参数")
@@ -332,7 +532,7 @@ async def main() -> None:
             checkpoint = CheckpointStore(args.checkpoint_file).load()
         except Exception as error:
             print(f"读取 checkpoint 失败：{type(error).__name__}: {error}")
-            return
+            return 1
         if checkpoint.phase == "complete" and checkpoint.final_plan is not None:
             if args.output == "json":
                 print(
@@ -344,13 +544,13 @@ async def main() -> None:
                 )
             else:
                 print(render_trip_plan(checkpoint.final_plan))
-            return
+            return 0
         if checkpoint.phase != "searched" or checkpoint.search_plan is None or checkpoint.search_results is None:
             print(
                 f"checkpoint 当前阶段为 {checkpoint.phase}，需要 searched 或 complete "
                 "checkpoint 才能恢复。"
             )
-            return
+            return 1
         resume_checkpoint = checkpoint
 
     memory_store = JsonMemoryStore(args.memory_file) if args.memory_file else None
@@ -366,7 +566,8 @@ async def main() -> None:
             await run_offline(args)
         except Exception as error:
             print(f"离线 workflow 失败：{type(error).__name__}: {error}")
-        return
+            return 1
+        return 0
 
     print("正在初始化旅行 Agent...")
     primary_model = args.model or os.getenv("LLM_MODEL")
@@ -402,9 +603,12 @@ async def main() -> None:
 
     agent = create_with_optional_fallback(create_travel_agent)
     intake_agent = create_with_optional_fallback(create_intake_agent)
+    # ``auto``/``direct`` use the compact TripNarrative response and do not
+    # need a second formatter model. Keep the formatter only for legacy
+    # ``convert`` mode, where it is still the requested two-stage workflow.
     formatter = (
         create_with_optional_fallback(create_trip_formatter)
-        if settings.output_mode in {"convert", "auto"}
+        if settings.output_mode == "convert"
         else None
     )
     reviewer = (
@@ -418,8 +622,11 @@ async def main() -> None:
         resume_checkpoint.original_request
         or resume_checkpoint.request.model_dump_json(ensure_ascii=False)
         if resume_checkpoint is not None
-        else input("请输入你的旅行需求：")
+        else await ask_initial_request()
     )
+    # Everything the user actually typed, in order. Citations are checked
+    # against this, so a fact given in any turn stays supported in later ones.
+    user_turns: list[str] = [request]
     trip_request = None
     search_plan = None
     tool_results = None
@@ -445,10 +652,22 @@ async def main() -> None:
             search_plan = resume_checkpoint.search_plan
             tool_results = resume_checkpoint.search_results
         else:
+            # Every clarification answer is part of what the user said, so it
+            # has to join the text that citations are checked against. Without
+            # this, an origin supplied in a clarification round looks uncited
+            # on the next turn and is cleared.
+            asker = make_clarification_asker(args.debug)
+
+            async def ask_and_record(current: TripRequest) -> str:
+                answer = await asker(current)
+                if answer.strip():
+                    user_turns.append(answer.strip())
+                return answer
+
             trip_request, _ = await collect_trip_request(
                 intake_agent,
                 request,
-                ask_clarification=ask_request_clarification,
+                ask_clarification=ask_and_record,
                 on_prompt=prompt_observer,
                 on_trace=trace.record_llm,
             )
@@ -481,7 +700,7 @@ async def main() -> None:
                 metrics=trace.build_metrics(tool_results),
                 include_input=args.log_input,
             )
-            return
+            return 0
         if resume_checkpoint is None:
             search_plan = build_search_plan(trip_request)
             if checkpoint_store is not None:
@@ -525,42 +744,88 @@ async def main() -> None:
                     indent=2,
                 )
             )
-        planner_request = build_planner_prompt(
-            request,
-            trip_request,
-            search_plan,
-            tool_results,
-            memory=memory,
-        )
-        if args.review:
-            if reviewer is None or settings.output_mode == "text":
-                raise ValueError("--review requires a structured output mode")
-            result = await run_plan_review_workflow(
-                planner=agent,
-                reviewer=reviewer,
-                planner_prompt=planner_request,
-                request=trip_request,
-                search_plan=search_plan,
-                search_results=tool_results,
-                formatter=formatter,
-                mode=settings.output_mode,
-                on_prompt=prompt_observer,
-                on_trace=trace.record_llm,
+        async def run_planner(
+            current_request: TripRequest,
+            current_plan,
+            current_results,
+            planner_text: str,
+            feedback: str | None = None,
+        ):
+            """Run only the planner stage over existing typed tool evidence."""
+
+            prompt_builder = (
+                build_trip_narrative_prompt
+                if settings.output_mode in {"auto", "direct"}
+                else build_planner_prompt
             )
-        else:
-            result = await plan_trip_structured(
+            planner_request = prompt_builder(
+                planner_text,
+                current_request,
+                current_plan,
+                current_results,
+                memory=memory,
+            )
+            if feedback:
+                # A retry must carry what was wrong; at temperature 0 an
+                # identical prompt reproduces the identical bad plan.
+                planner_request = f"{planner_request}\n\n{feedback}"
+            if args.review:
+                if reviewer is None or settings.output_mode == "text":
+                    raise ValueError("--review requires a structured output mode")
+                return await run_plan_review_workflow(
+                    planner=agent,
+                    reviewer=reviewer,
+                    planner_prompt=planner_request,
+                    request=current_request,
+                    search_plan=current_plan,
+                    search_results=current_results,
+                    formatter=formatter,
+                    mode=settings.output_mode,
+                    on_prompt=prompt_observer,
+                    on_trace=trace.record_llm,
+                )
+            return await plan_trip_structured(
                 agent,
                 planner_request,
                 formatter=formatter,
                 mode=settings.output_mode,
                 tools=[],
-                request_context=trip_request,
-                search_results=tool_results,
+                request_context=current_request,
+                search_results=current_results,
                 on_prompt=prompt_observer,
                 on_trace=trace.record_llm,
             )
+
+        async def planned(
+            current_request: TripRequest, current_plan, current_results, planner_text: str
+        ):
+            """Plan, then let the deterministic invariants gate the result."""
+
+            if settings.output_mode == "text":
+                return await run_planner(
+                    current_request, current_plan, current_results, planner_text
+                )
+            outcome = await plan_with_invariant_gate(
+                lambda feedback: run_planner(
+                    current_request,
+                    current_plan,
+                    current_results,
+                    planner_text,
+                    feedback,
+                ),
+                current_request,
+                current_plan,
+                current_results,
+            )
+            report_gate(outcome)
+            report_review(outcome.plan)
+            return outcome.plan
+
+        result = await planned(trip_request, search_plan, tool_results, request)
         if memory_store is not None and isinstance(result, TripPlan):
-            memory_store.remember_preferences(args.user_id, trip_request.preferences)
+            memory_store.remember_preferences(
+                args.user_id, durable_preferences(trip_request)
+            )
         if checkpoint_store is not None and isinstance(result, TripPlan):
             checkpoint_store.save(
                 WorkflowCheckpoint.create(
@@ -574,7 +839,9 @@ async def main() -> None:
                 )
             )
     except Exception as error:
-        print(f"模型请求失败：{type(error).__name__}: {error}")
+        print(friendly_error(error))
+        if args.debug:
+            print(f"[debug] {type(error).__name__}: {error}")
         write_run_record(
             args.log_file,
             run_id=args.run_id,
@@ -596,7 +863,7 @@ async def main() -> None:
             ),
             include_input=args.log_input,
         )
-        return
+        return 1
 
     print("模型已返回结果。")
     write_run_record(
@@ -604,7 +871,7 @@ async def main() -> None:
         run_id=args.run_id,
         mode=settings.output_mode,
         model=(fallback_model if getattr(agent, "used_fallback", False) else primary_model),
-        status="complete",
+        status=(result.status if isinstance(result, TripPlan) else "complete"),
         request_text=request,
         request=trip_request,
         search_plan=search_plan,
@@ -620,25 +887,204 @@ async def main() -> None:
         ),
         include_input=args.log_input,
     )
-    if settings.output_mode == "text":
-        print(format_plan(result.text))
-    else:
-        # Structured modes are intentionally strict: a text fallback here
-        # would make downstream JSON/database/evaluation code unreliable.
-        if not isinstance(result, TripPlan):
-            raise TypeError("structured mode returned a non-TripPlan result")
+    def show(plan: TripPlan) -> None:
         if args.debug:
             print("[debug] WorkflowChecks：")
             for check in check_workflow_invariants(
-                trip_request, search_plan, tool_results, result
+                trip_request, search_plan, tool_results, plan
             ):
                 status = "PASS" if check.passed else "FAIL"
                 print(f"[{status}] {check.name}: {check.message}")
+            print(render_failure_summary(tool_results))
         if args.output == "json":
-            print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))
+            print(json.dumps(plan.model_dump(mode="json"), ensure_ascii=False, indent=2))
         else:
-            print(render_trip_plan(result))
+            print(render_trip_plan(plan))
+
+    if settings.output_mode == "text":
+        print(format_plan(result.text))
+        return 0
+    # Structured modes are intentionally strict: a text fallback here
+    # would make downstream JSON/database/evaluation code unreliable.
+    if not isinstance(result, TripPlan):
+        print("结构化 workflow 返回了非 TripPlan 结果。")
+        return 1
+    show(result)
+
+    # The loop normally needs a terminal, so a piped eval run does not sit
+    # waiting on input. ``--follow-up`` is the explicit opt-in that lets a
+    # script drive the conversation through an ordinary pipe.
+    if args.no_follow_up or not (args.follow_up or sys.stdin.isatty()):
+        return 0
+
+    # Follow-up turns. The plan, the request, and the typed SearchResults stay
+    # in memory, which is exactly the state a ``searched`` checkpoint holds.
+    # A turn that changes no tool query therefore costs one planner call and
+    # no external request at all.
+    router = create_with_optional_fallback(create_follow_up_router)
+
+    async def revise_request(latest: str):
+        """Re-extract the request from every user turn, newest taking priority."""
+
+        spoken = "\n".join(f"{i}. {t}" for i, t in enumerate(user_turns, 1))
+        revised = await extract_trip_request(
+            intake_agent,
+            "用户按时间顺序说过的全部内容（只读取用户原文）：\n"
+            f"{spoken}\n\n"
+            f"用户最新的修改要求：\n{latest}\n\n"
+            "请只从以上用户文字提取字段；若与之前冲突，以最新要求为准。",
+            on_prompt=prompt_observer,
+            on_trace=trace.record_llm,
+        )
+        revised = merge_trip_requests(trip_request, revised)
+        return apply_evidence_guards(revised, "\n".join(user_turns))
+
+    turn = 0
+    while True:
+        try:
+            answer = (
+                await read_user_line(
+                    "\n还要调整吗？（例如：改成4天 / 第二天写详细点 / "
+                    "某个地方为什么没安排；直接回车结束）\n"
+                    "You can also reply in English. Press Enter to finish.\n> "
+                )
+            ).strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if not answer:
+            return 0
+        turn += 1
+        user_turns.append(answer)
+
+        if looks_like_end(answer):
+            return 0
+        intent = await classify_follow_up(
+            router, answer, on_prompt=prompt_observer, on_trace=trace.record_llm
+        )
+        if args.debug:
+            print(f"[debug] follow-up action={intent.action} reason={intent.reason}")
+        if intent.action == "end":
+            return 0
+        if intent.action == "out_of_scope":
+            print(
+                "这个 demo 不做预订、支付或改签。可以调整天数、日期、城市、预算、"
+                "服务范围，或者让我把某一天写得更详细。"
+            )
+            continue
+
+        try:
+            if intent.action == "ask_about_plan":
+                print(
+                    "\n"
+                    + await answer_plan_question(
+                        agent,
+                        answer,
+                        trip_request,
+                        tool_results,
+                        result,
+                        on_prompt=prompt_observer,
+                        on_trace=trace.record_llm,
+                    )
+                )
+                continue
+
+            if intent.action == "refine_narrative":
+                # Facts are unchanged, so no tool runs again.
+                result = await planned(
+                    trip_request,
+                    search_plan,
+                    tool_results,
+                    f"{request}\n\n用户对表达方式的追加要求：{answer}",
+                )
+                if not isinstance(result, TripPlan):
+                    print("结构化 workflow 返回了非 TripPlan 结果。")
+                    return 1
+                show(result)
+                continue
+
+            # modify_request: re-extract, then merge with the same
+            # stated_fields rule the clarification rounds use.
+            request = f"{request}\n\n用户补充信息：{answer}"
+            revised = await revise_request(answer)
+            rounds = 0
+            while revised.status != "ready" and rounds < 2:
+                # A modification that leaves the request incomplete needs a
+                # real question with a real answer. Printing the question and
+                # continuing dropped the whole turn: the next thing the user
+                # typed was read as a new follow-up, not as the answer.
+                rounds += 1
+                print(f"\n{build_clarification_question(revised)}")
+                try:
+                    reply = (await read_user_line("> ")).strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    return 0
+                if not reply:
+                    break
+                user_turns.append(reply)
+                request = f"{request}\n\n用户补充信息：{reply}"
+                revised = await revise_request(reply)
+            if revised.status != "ready":
+                print("信息仍然不完整，本次修改没有生效；原计划保持不变。")
+                continue
+
+            next_plan = build_search_plan(revised)
+            if next_plan == search_plan:
+                # SearchPlan compares by value: an unchanged query set means
+                # the existing evidence is still exactly right.
+                print("（查询条件未变，复用已有工具结果）")
+            else:
+                tool_results = execute_search_plan(
+                    next_plan,
+                    knowledge_retriever=_build_knowledge_retriever(args),
+                    run_id=args.run_id,
+                    trace_id=trace.trace_id,
+                )
+            trip_request, search_plan = revised, next_plan
+            result = await planned(
+                trip_request, search_plan, tool_results, request
+            )
+            if not isinstance(result, TripPlan):
+                print("结构化 workflow 返回了非 TripPlan 结果。")
+                return 1
+            show(result)
+            if checkpoint_store is not None:
+                checkpoint_store.save(
+                    WorkflowCheckpoint.create(
+                        args.run_id,
+                        "complete",
+                        trip_request,
+                        original_request=request,
+                        search_plan=search_plan,
+                        search_results=tool_results,
+                        final_plan=result,
+                    )
+                )
+        except Exception as error:
+            # One failed follow-up must not discard a plan the user already has.
+            print(f"\n这一轮没能完成：{friendly_error(error)}")
+            if args.debug:
+                print(f"[debug] {type(error).__name__}: {error}")
+            continue
+        finally:
+            write_run_record(
+                args.log_file,
+                run_id=args.run_id,
+                mode=settings.output_mode,
+                model=primary_model,
+                status=(result.status if isinstance(result, TripPlan) else "complete"),
+                request_text=request,
+                request=trip_request,
+                search_plan=search_plan,
+                tool_results=tool_results,
+                final_plan=result if isinstance(result, TripPlan) else None,
+                trajectory=trace.build_trajectory(tool_results),
+                trace_id=trace.trace_id,
+                metrics=trace.build_metrics(tool_results),
+                include_input=args.log_input,
+            )
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    raise SystemExit(asyncio.run(main()))

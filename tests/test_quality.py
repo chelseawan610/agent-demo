@@ -57,6 +57,7 @@ def test_workflow_checks_detects_model_changed_flight_evidence():
         destination="Tokyo",
         start_date="2099-10-01",
         requested_services=["flights"],
+        flight_type="one_way",
     )
     search_plan = build_search_plan(request)
     results = SearchResults()

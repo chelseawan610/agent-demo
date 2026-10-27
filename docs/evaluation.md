@@ -38,10 +38,11 @@ LLM judge 可以作为开放式“可读性、相关性、个性化”补充指�
 MAF 的 `PlannerExecutor -> ReviewerExecutor`，不会自动修改计划，也没有纳入离线
 10-case 的 pass/fail。
 
-时长也在工具执行前固定：明确的 `days`/`nights` 优先，其次使用起止日期推导；如果
-用户没有说明，Intake Agent 结合目的地、偏好、服务范围和旅行节奏直接推荐 `days`，
-同时输出受限的 `duration_profile` 作为可审计解释。因此改变时长不会导致工具执行完
-以后重新搜索；只有模型没有给出任何推荐时，才使用按服务范围区分的最小保护性窗口。
+时长也在工具执行前固定：明确的 `days`/`nights` 优先，其次使用起止日期的 elapsed
+差值推导，不再使用包含首日的 `+1`。完整规划、酒店查询和默认往返机票如果没有
+`days`、`nights` 或回程/退房日期，会停在 clarification；只有攻略/活动-only 请求
+允许 Intake Agent 结合目的地、偏好和旅行节奏推荐 `days`。因此不会先调用工具再
+临时改变时长，也不会把未确认的旅行边界伪装成模型事实。
 
 ## 3. Memory contract
 

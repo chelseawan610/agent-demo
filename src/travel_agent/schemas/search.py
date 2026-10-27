@@ -36,6 +36,9 @@ class ActivityQuery(BaseModel):
     start_date: date | None = None
     preferences: list[str] = Field(default_factory=list)
     preference_details: list[PreferenceSpec] = Field(default_factory=list)
+    # A balanced mix is applied only when providers expose indoor/outdoor
+    # evidence; unknown venues are never guessed.
+    venue_mix: Literal["balanced", "indoor", "outdoor", "unspecified"] = "unspecified"
 
 
 class FoodQuery(BaseModel):
@@ -44,6 +47,9 @@ class FoodQuery(BaseModel):
     radius_meters: int = 5000
     limit: int = 6
     preferences: list[str] = Field(default_factory=list)
+    # Provider-friendly queries come from the typed Intake preference details.
+    # They let the adapter match OSM cuisine tags without re-parsing user text.
+    preference_queries: list[str] = Field(default_factory=list)
 
 
 class DestinationQuery(BaseModel):
@@ -60,6 +66,7 @@ class AttractionQuery(BaseModel):
     days: int
     radius_meters: int = 8000
     limit: int = 9
+    venue_mix: Literal["balanced", "indoor", "outdoor", "unspecified"] = "unspecified"
 
 
 class FlightLinkQuery(BaseModel):
@@ -96,6 +103,7 @@ class SearchPlan(BaseModel):
     flight_link_query: FlightLinkQuery | None = None
     hotel_link_query: HotelLinkQuery | None = None
     knowledge_query: str | None = None
+    knowledge_scope: str | None = None
     knowledge_top_k: int = Field(default=5, ge=1, le=10)
     knowledge_max_chars: int = Field(default=4500, ge=500, le=12000)
 
@@ -128,12 +136,12 @@ class SearchPlan(BaseModel):
     @model_validator(mode="after")
     def normalize_route_modes(self) -> "SearchPlan":
         modes = list(dict.fromkeys(self.route_modes or []))
-        if self.route_mode == "transit" and "transit" not in modes:
+        # Keep compatibility with callers that set only route_mode; do not
+        # override an explicit route_modes=["transit"] selection.
+        if self.route_mode == "transit" and modes == ["driving"]:
             modes.append("transit")
-        if "transit" in modes and "driving" not in modes:
-            modes.insert(0, "driving")
         if not modes:
-            modes = ["driving"]
+            modes = ["transit" if self.route_mode == "transit" else "driving"]
         self.route_modes = modes
         self.route_mode = "transit" if "transit" in modes else "driving"
         return self

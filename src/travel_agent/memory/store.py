@@ -21,6 +21,30 @@ class UserMemory(BaseModel):
     source: Literal["explicit_user_preference"] = "explicit_user_preference"
 
 
+# A named landmark is a fact about one trip, not a durable taste. Persisting
+# "东京塔" would recall it on a later Seoul request, where it is noise at best
+# and a cross-destination suggestion at worst. Only preference kinds that stay
+# true between trips are written to long-term memory.
+DURABLE_PREFERENCE_KINDS = frozenset({"interest", "food", "accessibility"})
+
+
+def durable_preferences(request) -> list[str]:
+    """Select the preferences worth remembering after this trip ends.
+
+    ``request`` is a ``TripRequest``; it is untyped here only to keep the
+    memory package independent of the request schema. A preference with no
+    matching detail is dropped rather than guessed.
+    """
+
+    by_label = {detail.label: detail for detail in request.preference_details}
+    return [
+        label
+        for label in request.preferences
+        if (detail := by_label.get(label)) is not None
+        and detail.kind in DURABLE_PREFERENCE_KINDS
+    ]
+
+
 class MemoryStore(Protocol):
     """Storage contract that JSON, SQLite, or a hosted store can implement."""
 

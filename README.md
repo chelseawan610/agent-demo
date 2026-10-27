@@ -11,8 +11,8 @@ User input
   -> SearchPlan (deterministic)
   -> public API adapters / demo inventory / search-link tools
   -> SearchResults (typed evidence)
-  -> Planner Agent
-  -> deterministic evidence constraints
+  -> Planner Agent -> TripNarrative (small prose object)
+  -> deterministic evidence assembly
   -> TripPlan
   -> JSON or Markdown
 
@@ -27,10 +27,11 @@ Optional quality path:
 
 Planner 没有直接工具权限。所有工具调用只能来自 `SearchPlan`，因此不会出现模型无限循环调用或擅自改变日期的问题。
 
-这不是“只把 prompt 写得更长”的实现：模型输出先经过 MAF 的
-`response_format` 结构化响应，再由 Pydantic 校验；程序随后把日期、服务范围、
-预算、工具事实和活动日期重新约束一次。模型负责语义理解和表达，程序负责边界、
-执行、失败状态和可审计记录。
+这不是“只把 prompt 写得更长”的实现：Intake 和 Planner 都通过 MAF 的
+`response_format` 进入 Pydantic 边界。正常 Planner 只输出很小的
+`TripNarrative`（摘要和每日标题）；程序随后从 `TripRequest` 与 `SearchResults`
+确定性组装完整 `TripPlan`。航班、酒店、天气、地点、路线、来源和活动日期不允许由
+模型重写。模型负责语义理解和表达，程序负责边界、执行、失败状态和可审计记录。
 
 ## Data sources
 
@@ -52,10 +53,19 @@ Public APIs are best-effort services with no SLA. OpenStreetMap attribution must
 
 活动分配是一个确定性步骤，不交给 Planner 自由决定。流程是：
 
-1. Photon 先尝试解析用户明确点名的地点；Overpass 获取目的地附近的景点候选。
+1. Intake 区分具体地点与规划约束：`place_name`/`place_type` 用于地点，`planning_hint` 用于室内外搭配等偏好。Photon 只解析具体地点，并用目的地坐标、规范名称和 OSM 类型核验候选；同名餐厅不能替代海港。
 2. 程序按候选数量和旅行天数计算每日容量，通常为 1--3 个地点，而不是固定每天三个。
 3. 如果 OSM 提供简单的 `opening_hours` 规则，程序会把计划日期为 `closed` 的地点排除；缺少或暂时无法解析的规则保留为 `unknown`，并在输出中明确标注“开放时间未核验”。
 4. 已解析的地点按天分配，并尽量让同一天的地点靠近；往返行程会给最后一天较小容量，因为返程航班时间尚未选定。
+
+`venue_mix=balanced` 会让 Overpass 查询包含公园、花园等室外候选，并在截断结果前
+交替保留已知室内/室外候选；每天分配也使用这个约束。它不会把“室内外结合”造为
+景点。类型未知仍保持 unknown；候选不足时，最终计划标记 partial 并说明偏好尚未满足。
+具体地点要求核验完整名称（Unicode/大小写/空白规范化后），不使用名称片段猜测。
+遇到不支持的别名、类型不匹配或远距离同名候选会返回 unavailable，可能降低召回率，
+但不会接受相似商家。海港等区域的中心点保留在 JSON 中，同时标记
+`route_eligible=false`，不会被当作已核验入口传入路线计算。
+完整示例及修改位置见 [docs/preference-resolution.md](docs/preference-resolution.md)。
 
 目前只安全解析常见的每周规则，例如 `Mo-Fr 10:00-18:00`、`Mo-Su off` 和 `24/7`。
 节假日、临时闭馆和复杂的 OSM 规则不会被猜测，仍需查看官网。活动候选会保留
@@ -73,8 +83,10 @@ Public APIs are best-effort services with no SLA. OpenStreetMap attribution must
 餐饮不是另一个 Agent，而是一个可选的 `food` service。用户明确说“推荐餐厅、吃饭、
 美食或寿司”时，Intake 才把它加入 `requested_services`，SearchPlan 才会执行
 `search_food`。这个工具复用 Overpass 的地点、营业时间、官网和 OSM attribution，
-输出的是候选餐厅，不会编造价格、评分、菜单或预订状态。普通旅行请求不会因为餐饮
-工具而增加网络调用。
+输出的是候选餐厅，不会编造价格、评分、菜单或预订状态。用户明确给出菜系偏好时，
+程序只保留 OSM `cuisine` 标签与 provider-friendly 查询词匹配的候选；没有标签或
+没有匹配项就返回空列表并说明原因，不会把普通咖啡店冒充成寿司或拉面店。普通旅行
+请求不会因为餐饮工具而增加网络调用。
 
 路线默认使用 OSRM 的驾车估算。用户明确要求地铁或公交时，流程会保留驾车路线，并
 额外加入 `transit` 路线模式，同时调用 `optimize_transit_route`。当前它会诚实返回
@@ -125,15 +137,23 @@ LLM_REASONING_EFFORT=none
 TRIP_OUTPUT_MODE=auto
 LLM_TIMEOUT_SECONDS=90
 TRAVEL_API_TIMEOUT_SECONDS=20
+TRAVEL_OVERPASS_TIMEOUT_SECONDS=8
+TRAVEL_OVERPASS_ATTEMPTS=1
 ```
 
 The travel-data APIs need no API keys.
 
+`TRAVEL_OVERPASS_TIMEOUT_SECONDS` and `TRAVEL_OVERPASS_ATTEMPTS` deliberately
+use stricter defaults than the other public endpoints. Overpass is a shared
+community service and can be slow or rate-limited; a timeout marks only the
+attractions tool unavailable instead of blocking the whole plan. Increase these
+values only for a deliberate live smoke test, not for every classroom run.
+
 `deepseek/deepseek-v4.1-flash` is the current default because it passed the
 expanded intake golden set reliably. `qwen/qwen3.7-flash` remains an inexpensive
 comparison model in the evaluation command. The project still validates every response with
-Pydantic and has a formatter fallback, so a model is not trusted merely
-because it advertises JSON support. `none` disables hidden reasoning by
+Pydantic and only uses the legacy formatter in `--mode convert`, so a model is
+not trusted merely because it advertises JSON support. `none` disables hidden reasoning by
 default so a small response budget is not consumed before JSON is emitted.
 You can override it with another OpenAI-compatible model without changing
 Python code; raise reasoning to `low` or `medium` only after an evaluation
@@ -148,6 +168,15 @@ the default.
 ```bash
 PYTHONPATH=src uv run python -m travel_agent.app.cli
 ```
+
+CLI 启动时会把标准输入、输出和错误流统一配置为 UTF-8，并在宿主终端拒绝重配置
+时安全降级，因此中文输入不会因为本地 locale 不一致直接触发编码异常。目的地也有
+一层很小的实体保护：用户明确写出首尔、东京等已知城市时，模型不能把它静默改成另一个
+城市；多个城市表达不清时会回到追问，而不会先调用错误的工具。
+
+Intake 的每轮追问是无状态的：下一轮只重新读取用户原文和本轮补充，程序再合并已经确认
+的字段，不把上一轮模型 JSON 当作新的用户事实。这样可以避免一次错误解析通过 MAF session
+或追问上下文被重复强化。指令中的城市示例也使用占位词，避免示例城市成为模型的默认答案。
 
 如果需要给程序或评测读取 JSON：
 
@@ -203,8 +232,14 @@ Checkpoint 和 RAG 实验；但只有 `--output` 是普通用户经常需要的�
 `--mode`、模型、日志、review、checkpoint 和 RAG 引擎属于开发者参数，
 不应该要求最终用户理解。
 
+The CLI exits with code `0` for a completed plan, a partial plan, or a normal
+`needs_clarification` response. It exits with code `1` for workflow/provider
+failures or invalid checkpoint input, so shell scripts and CI can distinguish a
+valid user-facing result from an execution failure.
+
 Use `--debug-prompts` when teaching or debugging model input. It prints the
-stage (`intake`, `planner.direct`, `formatter.structured`, and so on), the
+stage (`intake`, `planner.narrative`, `formatter.structured` in legacy
+`convert`, and so on), the
 dynamic user message, and the `response_format` option. The agent's static
 system instructions remain in `src/travel_agent/agents/`; travel tools receive
 typed Python arguments from `SearchPlan`, not an unconstrained tool loop.
@@ -338,7 +373,7 @@ PYTHONPATH=src uv run python -m travel_agent.app.cli \
   --offline \
   --output markdown \
   --debug \
-  --request-json '{"requested_services":["flights","hotels","activities","guide"],"origin":"Shanghai","destination":"Tokyo","start_date":"2026-10-01","days":3,"preferences":["Tokyo Tower"],"preference_details":[{"label":"Tokyo Tower","search_query":"Tokyo Tower Tokyo","kind":"place"}]}'
+  --request-json '{"requested_services":["flights","hotels","activities","guide"],"origin":"Shanghai","destination":"Tokyo","start_date":"2026-10-01","days":3,"flight_type":"round_trip","preferences":["Tokyo Tower"],"preference_details":[{"label":"Tokyo Tower","search_query":"Tokyo Tower Tokyo","kind":"place"}]}'
 ```
 
 Offline mode still calls the free geocoding, weather, place, attraction, and
@@ -349,23 +384,32 @@ shell command.
 
 ## Clarification behavior
 
-- A full plan requires origin, destination, and departure date.
-- Flights-only requires origin, destination, and departure date; without return information it stays one-way.
-- Hotels-only requires destination and check-in date.
-- Guide/activities requires only destination.
-- Explicit days, nights, and return dates always win. When duration is omitted,
-  Intake recommends `days` from the destination, user preferences, requested
-  services, and implied pace before tools run. `duration_profile` records the
-  model's bounded rationale (`day_trip`, `weekend`, `short_break`, `standard`,
-  or `extended`). The application only uses a small two-day complete-plan
-  fallback when the model supplies neither a recommendation nor a profile.
+- The first interactive turn explains four entry types: full trip, round-trip
+  flights, hotels, and guide/activities. The user can choose a number or ignore
+  the menu and write any combination such as “机票和酒店” directly.
+- A full plan requires origin, destination, departure date, and one duration
+  boundary: days, nights, or a return date.
+- Flights-only defaults to round-trip and therefore requires a return date or
+  trip length. An explicit one-way request is represented by `flight_type=one_way`
+  and needs no return boundary.
+- Hotels-only requires destination, check-in date, and nights or check-out date.
+- Guide/activities requires only destination; its duration may be selected by
+  Intake when the user leaves it open.
+- Explicit days, nights, and return dates always win. A full plan or round-trip
+  request stays in clarification when its duration boundary is missing. For
+  guide/activities-only, Intake may recommend bounded `days` and records a
+  `duration_profile` (`day_trip`, `weekend`, `short_break`, `standard`, or
+  `extended`).
+- When both dates are explicit, elapsed days use the date difference without an
+  inclusive `+1`: 2026-10-20 to 2026-10-23 resolves to 3 days. Hotel nights use
+  the explicit interval when available; an explicit 3-day request without a
+  return date resolves to the usual 2-night stay.
 - Dates such as `十月3号`, `10.3`, and `2026.10.3` are normalized to ISO dates. If the year is omitted, the nearest upcoming occurrence relative to the runtime date is used.
 - The CLI asks at most three follow-up rounds. Every round merges earlier answers, so supplying `Shanghai` once cannot be lost later.
 - If required fields are still missing, it returns `needs_clarification` and calls no travel-data tools.
 - Required fields are computed by `TripRequest.required_missing_fields()`, not by
-  planner prose: destination is always required; flights add origin and
-  departure date; hotel-only adds check-in date. Duration, budget, return date,
-  transport mode, and preferences are optional and are defaulted or left empty.
+  planner prose. This keeps the user-facing questions and the SearchPlan
+  boundary identical.
 - Interactive CLI clarification keeps asking while a hard field is still
   missing, up to three rounds. `--offline` is different: it accepts an already
   structured `TripRequest` and deliberately cannot ask natural-language
@@ -375,7 +419,18 @@ shell command.
 
 Each external adapter returns a typed `ToolResult` with `ok`, `unavailable`, or `skipped`. A timeout or rate limit only removes that provider's data; successful data from other providers remains. Mock data is never substituted for a failed real API.
 
-Weather, attraction, and route facts are copied from `SearchResults` into `TripPlan` after the model responds. The model can write summaries and day titles, but cannot move an attraction to another day or replace tool evidence.
+Weather, attraction, and route facts are copied from `SearchResults` into `TripPlan` after the model responds. In the normal `auto` path the model only writes the bounded `TripNarrative`; it cannot move an attraction to another day or replace tool evidence.
+
+If the compact Planner response is invalid, the workflow emits the validation
+error in the trajectory and builds a deterministic plan directly from typed
+`SearchResults`. This is a controlled degradation: narrative text may be less
+polished, but tool facts, dates, service scope, and provider status remain
+inspectable. `TripPlan.generation_source` distinguishes `llm`,
+`deterministic_fallback`, and `offline`; `model_fallback_used` in JSONL means a
+second provider model was used, which is different from deterministic fallback.
+In `--mode direct` the strict behavior is retained and the schema error is
+returned to the caller, which is useful when testing a model's structured-output
+support.
 
 ## Tests
 
@@ -399,7 +454,7 @@ PYTHONPATH=src uv run pytest -q -m llm_live
 
 The offline suite covers service routing, one-way/round-trip boundaries, cross-month dates, one-day trips, three-round clarification, typed output, provider errors, partial degradation, food scope, transit-adapter degradation, weather-aware activity assignment, memory contracts, and fact constraints. The live suite covers Tokyo/Seoul/New York geocoding, Tokyo weather, Photon preferences, Overpass attractions, and OSRM routing.
 
-The current local result is `118 passed, 13 deselected`; the explicit public-API
+The current local result is `169 passed, 13 deselected`; the explicit public-API
 smoke run is `8 passed`. Public APIs can still be throttled or temporarily
 unavailable, so the default CI-style suite remains offline.
 
@@ -528,7 +583,9 @@ LLM 自说自话地判定。
 `section`、`score` 的 `KnowledgeHit` → Planner 读取证据 → 程序把 citation 写入
 `TripPlan.knowledge_sources`。知识库只用于稳定的背景说明，不代替天气、地点、
 营业时间或价格工具，也不会被当作实时事实。向量依赖不可用时，`hybrid` 自动退回
-BM25；`vector` 模式则明确报错。
+BM25；`vector` 模式则明确报错。检索还会带上目的地 scope：通用章节可以命中，
+其他章节只有在标题/正文与当前目的地匹配时才会进入上下文，避免“首尔请求命中东京
+知识”的跨目的地污染。
 
 #### RAG 参数和模型要求
 

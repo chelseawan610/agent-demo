@@ -55,6 +55,120 @@ def test_food_evidence_is_copied_to_final_plan():
     assert plan.food[0].name == "Demo Sushi"
     assert plan.food[0].venue_type == "mixed"
 
+
+def test_online_deterministic_fallback_is_not_labeled_offline():
+    request = TripRequest(
+        destination="Lisbon",
+        days=3,
+        requested_services=["activities", "guide"],
+    )
+
+    plan = build_deterministic_trip_plan(request, SearchResults(), offline=False)
+
+    assert "离线模式" not in plan.summary
+    assert "未调用语言模型" not in plan.summary
+    assert any("结构化输出未通过校验" in note for note in plan.notes)
+
+
+def test_offline_deterministic_plan_is_explicitly_labeled_offline():
+    request = TripRequest(
+        destination="Lisbon",
+        days=3,
+        requested_services=["activities", "guide"],
+    )
+
+    plan = build_deterministic_trip_plan(request, SearchResults())
+
+    assert "离线模式" in plan.summary
+    assert "未调用语言模型" in plan.summary
+
+
+@pytest.mark.asyncio
+async def test_typed_auto_uses_small_narrative_and_keeps_tool_facts():
+    request = TripRequest(
+        status="ready",
+        requested_services=["activities", "guide"],
+        destination="Tokyo",
+        days=2,
+    )
+    evidence = SearchResults(
+        activities=[
+            {
+                "destination": "Tokyo",
+                "day": 2,
+                "name": "Tokyo Tower",
+                "source": "Photon",
+                "provider_id": "tower",
+                "verified": True,
+            }
+        ]
+    )
+    planner = FakeAgent(
+        [
+            FakeResponse(
+                '{"summary":"已按你的偏好整理东京行程。",'
+                '"daily_titles":[{"day":2,"title":"东京塔与夜景"}]}'
+            )
+        ]
+    )
+
+    result = await plan_trip_structured(
+        planner,
+        "compact narrative prompt",
+        mode="auto",
+        request_context=request,
+        search_results=evidence,
+    )
+
+    assert result.generation_source == "llm"
+    assert result.summary == "已按你的偏好整理东京行程。"
+    assert result.itinerary[1].title == "东京塔与夜景"
+    assert result.itinerary[1].activities[0].name == "Tokyo Tower"
+
+
+@pytest.mark.asyncio
+async def test_typed_auto_marks_deterministic_fallback_without_formatter_call():
+    request = TripRequest(
+        status="ready",
+        requested_services=["activities", "guide"],
+        destination="Tokyo",
+        days=1,
+    )
+    planner = FakeAgent([FakeResponse("truncated output")])
+    formatter = FakeAgent([])
+
+    result = await plan_trip_structured(
+        planner,
+        "compact narrative prompt",
+        mode="auto",
+        formatter=formatter,
+        request_context=request,
+        search_results=SearchResults(),
+    )
+
+    assert result.generation_source == "deterministic_fallback"
+    assert formatter.calls == 0
+    assert any("确定性事实计划" in note for note in result.notes)
+
+
+def test_unavailable_food_does_not_claim_a_successful_no_match():
+    request = TripRequest(
+        destination="Tokyo",
+        days=2,
+        requested_services=["food"],
+        preferences=["寿司"],
+        preference_details=[
+            {"label": "寿司", "search_query": "sushi Tokyo", "kind": "food"}
+        ],
+    )
+    results = SearchResults(
+        foods=ToolResult.unavailable("Overpass API", "http_500", "down")
+    )
+
+    plan = build_deterministic_trip_plan(request, results)
+
+    assert not any("没有找到带有用户餐饮偏好" in note for note in plan.notes)
+
     @property
     def value(self):
         # Simulate a provider whose lazy structured parser rejects the text.
@@ -166,6 +280,75 @@ async def test_convert_raises_when_all_json_repairs_fail():
 
 
 @pytest.mark.asyncio
+async def test_auto_uses_typed_evidence_when_all_formatter_attempts_fail():
+    request = TripRequest(
+        requested_services=["flights"],
+        origin="Shanghai",
+        destination="Seoul",
+        start_date="2099-11-08",
+        flight_type="one_way",
+    )
+    evidence = SearchResults(
+        flights=[
+            {
+                "origin": "Shanghai",
+                "destination": "Seoul",
+                "date": "2099-11-08",
+                "airline": "Demo Air",
+                "departure": "09:00",
+                "arrival": "12:00",
+                "price": "¥1200",
+            }
+        ]
+    )
+    planner = FakeAgent([FakeResponse("not valid json")])
+    formatter = FakeAgent(
+        [FakeResponse("not valid json"), FakeResponse("still invalid"), FakeResponse("broken")]
+    )
+
+    result = await plan_trip_structured(
+        planner,
+        "one-way flight",
+        mode="auto",
+        formatter=formatter,
+        request_context=request,
+        search_results=evidence,
+    )
+
+    assert result.status == "partial"
+    assert result.days is None
+    assert result.flights == evidence.flights
+    assert any("确定性事实计划" in note for note in result.notes)
+
+
+@pytest.mark.asyncio
+async def test_auto_uses_typed_evidence_when_planner_provider_is_unavailable(monkeypatch):
+    request = TripRequest(
+        requested_services=["flights"],
+        origin="Shanghai",
+        destination="Seoul",
+        start_date="2099-11-08",
+        flight_type="one_way",
+    )
+    evidence = SearchResults()
+    planner = FakeAgent([ChatClientException("Connection error") for _ in range(6)])
+    monkeypatch.setattr("travel_agent.workflows.trip_planning.asyncio.sleep", _skip_sleep)
+
+    result = await plan_trip_structured(
+        planner,
+        "one-way flight",
+        mode="auto",
+        formatter=FakeAgent([]),
+        request_context=request,
+        search_results=evidence,
+    )
+
+    assert result.status == "partial"
+    assert result.days is None
+    assert any("确定性事实计划" in note for note in result.notes)
+
+
+@pytest.mark.asyncio
 async def test_request_context_overrides_invented_budget_and_optional_questions():
     payload = (
         '{"status":"needs_clarification","destination":"东京","days":3,'
@@ -271,6 +454,32 @@ async def test_tool_evidence_overrides_model_facts_and_day_assignment():
     assert result.places[0].provider_id == "tower"
     assert result.search_links[0].provider == "Google Travel"
     assert result.data_sources == ["geo"]
+
+
+def test_unavailable_evidence_marks_deterministic_plan_partial():
+    request = TripRequest(
+        destination="Tokyo",
+        days=2,
+        requested_services=["activities", "guide"],
+    )
+    results = SearchResults(
+        weather=ToolResult.unavailable("Open-Meteo", "timeout", "weather down"),
+        tool_calls=[
+            ToolCallRecord(
+                tool_name="get_weather_forecast",
+                provider="Open-Meteo",
+                status="unavailable",
+                error_code="timeout",
+                message="weather down",
+                elapsed_ms=1,
+            )
+        ],
+    )
+
+    plan = build_deterministic_trip_plan(request, results)
+
+    assert plan.status == "partial"
+    assert any("Open-Meteo" in note for note in plan.notes)
 
 
 @pytest.mark.asyncio

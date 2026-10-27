@@ -251,7 +251,11 @@ def check_workflow_invariants(
         "最终计划必须保留每次工具调用的状态。",
     )
 
-    valid_days = set(range(1, final_plan.days + 1))
+    valid_days = (
+        set(range(1, final_plan.days + 1))
+        if final_plan.days is not None
+        else set()
+    )
     activity_days = {
         activity.day for activity in search_results.activities
     }
