@@ -18,14 +18,14 @@ def search_hotels(
     return [
         HotelOption(
             name="Demo Central Hotel",
-            area="市中心",
+            area="city centre",
             nights=nights,
             price_per_night="¥650",
             rating="4.3/5",
         ),
         HotelOption(
             name="Sample Station Inn",
-            area="交通枢纽附近",
+            area="near the transit hub",
             nights=nights,
             price_per_night="¥420",
             rating="4.0/5",

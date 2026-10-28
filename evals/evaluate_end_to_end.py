@@ -35,7 +35,7 @@ class EndToEndCase:
 CASES = [
     EndToEndCase(
         "full_zh_with_preference",
-        "我从上海出发，2026年10月1日去东京玩三天，我想去东京塔。",
+        "我从上海出发，2099年10月1日去东京玩三天，我想去东京塔。",
         ("flights", "hotels", "activities", "guide"),
     ),
     EndToEndCase(
@@ -45,12 +45,12 @@ CASES = [
     ),
     EndToEndCase(
         "flights_only_zh",
-        "只查上海到东京 2026-10-01 的单程机票。",
+        "只查上海到东京 2099-10-01 的单程机票。",
         ("flights",),
     ),
     EndToEndCase(
         "hotels_only_zh",
-        "只查东京 2026-11-01 入住两晚的酒店。",
+        "只查东京 2099-11-01 入住两晚的酒店。",
         ("hotels",),
     ),
     EndToEndCase(

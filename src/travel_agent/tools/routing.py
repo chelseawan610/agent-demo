@@ -18,7 +18,8 @@ def optimize_day_route(
     print(f"[tool] optimize_day_route(day={day!r}, stops={len(resolved)!r})")
     if len(resolved) < 2:
         return ToolResult[RouteSummary].skipped(
-            "OSRM", "少于两个可用于路线的已定位地点；区域中心不作为到访入口。"
+            "OSRM",
+            "Fewer than two routable located places; an area centroid is not an entrance.",
         )
     coordinates = ";".join(
         f"{place.point.longitude},{place.point.latitude}" for place in resolved
@@ -38,7 +39,7 @@ def optimize_day_route(
             return ToolResult[RouteSummary].unavailable(
                 "OSRM",
                 "no_route",
-                payload.get("message", "未找到可用道路路线。"),
+                payload.get("message", "No usable road route was found."),
                 attribution=OSRM_ATTRIBUTION,
             )
         trip = payload["trips"][0]
@@ -86,10 +87,11 @@ def optimize_transit_route(
     print(f"[tool] optimize_transit_route(day={day!r}, stops={resolved_count!r})")
     if resolved_count < 2:
         return ToolResult[RouteSummary].skipped(
-            "OpenTripPlanner adapter", "少于两个已定位地点，无需计算公共交通路线。"
+            "OpenTripPlanner adapter",
+            "Fewer than two located places; no transit route is needed.",
         )
     return ToolResult[RouteSummary].unavailable(
         "OpenTripPlanner adapter",
         "not_configured",
-        "公共交通路线需要配置带 GTFS 数据的 OpenTripPlanner 服务；当前未伪造公交时间。",
+        "Transit routing needs an OpenTripPlanner service with GTFS data; no transit time was fabricated.",
     )

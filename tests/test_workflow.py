@@ -65,9 +65,9 @@ def test_online_deterministic_fallback_is_not_labeled_offline():
 
     plan = build_deterministic_trip_plan(request, SearchResults(), offline=False)
 
-    assert "离线模式" not in plan.summary
-    assert "未调用语言模型" not in plan.summary
-    assert any("结构化输出未通过校验" in note for note in plan.notes)
+    assert "Offline mode" not in plan.summary
+    assert "No model was called" not in plan.summary
+    assert any("structured output failed validation" in note for note in plan.notes)
 
 
 def test_offline_deterministic_plan_is_explicitly_labeled_offline():
@@ -79,8 +79,8 @@ def test_offline_deterministic_plan_is_explicitly_labeled_offline():
 
     plan = build_deterministic_trip_plan(request, SearchResults())
 
-    assert "离线模式" in plan.summary
-    assert "未调用语言模型" in plan.summary
+    assert "Offline mode" in plan.summary
+    assert "No model was called" in plan.summary
 
 
 @pytest.mark.asyncio
@@ -148,7 +148,7 @@ async def test_typed_auto_marks_deterministic_fallback_without_formatter_call():
 
     assert result.generation_source == "deterministic_fallback"
     assert formatter.calls == 0
-    assert any("确定性事实计划" in note for note in result.notes)
+    assert any("deterministic factual plan" in note for note in result.notes)
 
 
 def test_unavailable_food_does_not_claim_a_successful_no_match():
@@ -318,7 +318,7 @@ async def test_auto_uses_typed_evidence_when_all_formatter_attempts_fail():
     assert result.status == "partial"
     assert result.days is None
     assert result.flights == evidence.flights
-    assert any("确定性事实计划" in note for note in result.notes)
+    assert any("deterministic factual plan" in note for note in result.notes)
 
 
 @pytest.mark.asyncio
@@ -345,7 +345,7 @@ async def test_auto_uses_typed_evidence_when_planner_provider_is_unavailable(mon
 
     assert result.status == "partial"
     assert result.days is None
-    assert any("确定性事实计划" in note for note in result.notes)
+    assert any("deterministic factual plan" in note for note in result.notes)
 
 
 @pytest.mark.asyncio
@@ -520,7 +520,7 @@ async def test_request_context_overrides_zero_days_and_restores_every_day():
 
     assert result.destination == "Seoul"
     assert result.days == 4
-    assert result.summary == "已根据确认后的需求整理 Seoul 4 日旅行计划。"
+    assert result.summary == "A 4-day trip plan for Seoul, based on the confirmed request."
     assert [day.day for day in result.itinerary] == [1, 2, 3, 4]
     assert result.itinerary[3].activities[0].name == "Hongdae"
 

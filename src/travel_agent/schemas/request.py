@@ -43,6 +43,15 @@ class PreferenceSpec(BaseModel):
     planning_hint: Literal[
         "venue_mix", "indoor_only", "outdoor_only", "pace", "none"
     ] = "none"
+    # The trip day the user asked this place to fall on ("第3天想去双子塔").
+    # 1-based. Without it the request is silently flattened to "sometime
+    # during the trip", and the user cannot tell the difference in the output.
+    preferred_day: int | None = Field(
+        default=None,
+        ge=1,
+        le=14,
+        description="1-based trip day the user explicitly asked for; null when unspecified.",
+    )
 
 
 class BudgetSpec(BaseModel):
@@ -112,6 +121,19 @@ def parse_calendar_date(value: object, *, today: date | None = None) -> date | N
     raise ValueError("date must use a supported calendar format")
 
 
+# User-facing names for the fields intake still needs. They are also the
+# keys the clarification questions and the evidence exemptions are looked up
+# by, so they are defined once here rather than written out at each use.
+DESTINATION = "destination"
+ORIGIN = "origin city"
+DEPARTURE_DATE = "departure date"
+CHECK_IN_DATE = "check-in date"
+TRIP_LENGTH_OR_RETURN = "trip length, or return/check-out date"
+RETURN_OR_TRIP_LENGTH = "return date, or trip length"
+TRIP_LENGTH_OR_NIGHTS = "trip length, or nights/check-out date"
+NIGHTS_OR_CHECK_OUT = "number of nights, or check-out date"
+
+
 class TripRequest(BaseModel):
     """Normalized travel requirements extracted from a user message."""
 
@@ -167,14 +189,14 @@ class TripRequest(BaseModel):
         active_services = services or set(self.requested_services)
         missing: list[str] = []
         if not self.destination:
-            missing.append("目的地")
+            missing.append(DESTINATION)
         if "flights" in active_services:
             if not self.origin:
-                missing.append("出发城市")
+                missing.append(ORIGIN)
             if not self.start_date:
-                missing.append("出发日期")
+                missing.append(DEPARTURE_DATE)
         elif "hotels" in active_services and not self.start_date:
-            missing.append("入住日期")
+            missing.append(CHECK_IN_DATE)
 
         itinerary_scope = bool(active_services & {"activities", "guide", "food"})
         has_duration_boundary = (
@@ -184,15 +206,15 @@ class TripRequest(BaseModel):
         )
         if not has_duration_boundary:
             if {"flights", "hotels"} <= active_services:
-                boundary_label = "游玩天数或回程/退房日期"
+                boundary_label = TRIP_LENGTH_OR_RETURN
             elif "flights" in active_services and self.flight_type != "one_way":
-                boundary_label = "回程日期或游玩天数"
+                boundary_label = RETURN_OR_TRIP_LENGTH
             elif "hotels" in active_services and itinerary_scope:
-                boundary_label = "游玩天数或入住晚数/退房日期"
+                boundary_label = TRIP_LENGTH_OR_NIGHTS
             elif "hotels" in active_services and self.start_date:
-                boundary_label = "入住晚数或退房日期"
+                boundary_label = NIGHTS_OR_CHECK_OUT
             elif "flights" in active_services and itinerary_scope:
-                boundary_label = "回程日期或游玩天数"
+                boundary_label = RETURN_OR_TRIP_LENGTH
             else:
                 boundary_label = None
             if boundary_label is not None:
@@ -403,10 +425,10 @@ class TripRequest(BaseModel):
             # date message, so keep it as the only date requirement below.
             missing.extend(self.required_missing_fields(services=services))
             missing = [
-                field for field in missing if field not in {"出发日期", "入住日期"}
+                field for field in missing if field not in {DEPARTURE_DATE, CHECK_IN_DATE}
             ]
-            date_label = "出发日期" if "flights" in services else "入住日期"
-            missing.append(f"{date_label}（不能早于今天）")
+            date_label = DEPARTURE_DATE if "flights" in services else CHECK_IN_DATE
+            missing.append(f"{date_label} (cannot be in the past)")
         else:
             missing.extend(self.required_missing_fields(services=services))
 
@@ -416,7 +438,7 @@ class TripRequest(BaseModel):
             and self.return_date <= self.start_date
         )
         if invalid_return_date:
-            missing.append("回程日期（必须晚于出发日期）")
+            missing.append("return date (must be after departure date)")
 
         self._resolve_duration(services)
 

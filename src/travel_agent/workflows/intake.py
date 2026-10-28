@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from agent_framework import Agent
+from travel_agent.schemas import request as request_fields
 from travel_agent.schemas.request import DEFAULT_SERVICES, BudgetSpec, TripRequest
 from travel_agent.workflows.trip_planning import TraceObserver, plan_trip
 
@@ -60,10 +61,10 @@ EVIDENCE_REQUIRED_FIELDS = (
 # answer ("上海", "十一月一号") cites nothing, but it is the user's answer to
 # our own question, so the value stands.
 ASKED_FIELD_LABELS = {
-    "出发城市": "origin",
-    "出发日期": "start_date",
-    "入住日期": "start_date",
-    "目的地": "destination",
+    request_fields.ORIGIN: "origin",
+    request_fields.DEPARTURE_DATE: "start_date",
+    request_fields.CHECK_IN_DATE: "start_date",
+    request_fields.DESTINATION: "destination",
 }
 
 _WHITESPACE = re.compile(r"\s+")
@@ -199,7 +200,7 @@ def apply_evidence_guards(
     }
     # A duration boundary question ("回程日期或游玩天数") asks for whichever
     # boundary the user prefers, so an answer may legitimately supply either.
-    if any("回程" in label or "退房" in label for label in (requested_fields or set())):
+    if any("return" in label or "check-out" in label for label in (requested_fields or set())):
         exempt |= {"return_date"}
     request = protect_explicit_destination(request, source_text)
     request = drop_uncited_fields(request, source_text, exempt=exempt)

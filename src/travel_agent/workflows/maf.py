@@ -136,7 +136,7 @@ class ReviewerExecutor(Executor):
             # Review is a quality signal, not a prerequisite for returning a
             # plan. Preserve the validated plan if the second model is down.
             packet.plan.notes.append(
-                f"质量复核暂不可用：{type(error).__name__}"
+                f"Quality review is unavailable: {type(error).__name__}"
             )
         await ctx.yield_output(packet.plan)
 

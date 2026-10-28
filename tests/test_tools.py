@@ -1,8 +1,12 @@
 from datetime import date
+from unittest.mock import patch
 
 from travel_agent.tools.activities import assign_activities
 from travel_agent.schemas.evidence import GeoPoint, PlaceCandidate, ToolResult
-from travel_agent.schemas.request import PreferenceSpec
+from travel_agent.schemas.request import (
+    ORIGIN,
+    PreferenceSpec,
+)
 from travel_agent.tools.flights import search_flights
 from travel_agent.tools.hotels import search_hotels
 from travel_agent.schemas.trip import TripPlan
@@ -111,6 +115,15 @@ def test_activity_assignment_respects_explicit_day_capacities():
 
     counts = [sum(item.day == day for item in result) for day in range(1, 4)]
     assert counts == [1, 2, 1]
+
+
+def test_unknown_hours_never_make_a_known_closed_day_eligible():
+    candidate = PlaceCandidate(name="Museum", provider_id="museum", source="test", opening_hours="complex")
+    with patch("travel_agent.tools.activities.opening_status", side_effect=["closed", "unknown", "unknown"]):
+        activities = assign_activities(
+            "City", 2, [], ToolResult.ok("test", [candidate]), start_date=date(2026, 10, 5),
+        )
+    assert [activity.day for activity in activities] == [2]
 
 
 def test_activity_assignment_prefers_outdoor_places_on_drier_days():
@@ -262,7 +275,7 @@ def test_trip_plan_marks_missing_information():
         destination="东京",
         days=0,
         summary="需要补充信息",
-        missing_information=["出发城市", "旅行日期"],
+        missing_information=[ORIGIN, "旅行日期"],
     )
 
     assert plan.status == "needs_clarification"
@@ -284,20 +297,20 @@ def test_render_trip_plan_shows_clarification_state():
         destination="东京",
         days=0,
         summary="请补充出发城市",
-        missing_information=["出发城市"],
+        missing_information=[ORIGIN],
     )
 
     result = render_trip_plan(plan)
 
-    assert result.startswith("# 需要补充旅行信息")
-    assert "出发城市" in result
+    assert result.startswith("# More trip details needed")
+    assert ORIGIN in result
     assert "0日旅行计划" not in result
 
 
 def test_format_plan_adds_title_and_demo_notice():
     result = format_plan("### Daily Itinerary\n- Day 1")
 
-    assert result.startswith("# 旅行规划结果")
+    assert result.startswith("# Travel plan")
     assert DEMO_NOTICE in result
 
 
@@ -355,7 +368,7 @@ def test_markdown_renders_typed_weather_routes_and_links():
     assert "5.9 km" in markdown
     assert "Google Travel" in markdown
     assert "Demo Sushi" in markdown
-    assert "菜系 sushi; japanese" in markdown
+    assert "cuisine sushi; japanese" in markdown
     assert payload["routes"][0]["distance_meters"] == 5900
 
 
@@ -386,7 +399,7 @@ def test_markdown_renders_activity_operating_hours_and_duration():
 
     markdown = render_trip_plan(plan)
 
-    assert "开放时间 Mo-Su 09:00-22:00" in markdown
-    assert "建议停留约 90 分钟" in markdown
-    assert "[官网](https://example.test/tokyo-tower)" in markdown
-    assert "室内外皆可" in markdown
+    assert "open Mo-Su 09:00-22:00" in markdown
+    assert "about 90 min" in markdown
+    assert "[website](https://example.test/tokyo-tower)" in markdown
+    assert "indoor or outdoor" in markdown

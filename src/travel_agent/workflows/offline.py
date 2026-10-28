@@ -14,7 +14,7 @@ def build_offline_trip_plan(
 
     if request.status != "ready":
         raise ValueError(
-            "离线模式需要 ready 状态的 TripRequest；"
-            f"仍缺少：{', '.join(request.missing_fields) or '未知字段'}"
+            "Offline mode requires a ready TripRequest; "
+            f"still missing: {', '.join(request.missing_fields) or 'unknown fields'}"
         )
     return build_deterministic_trip_plan(request, search_results)

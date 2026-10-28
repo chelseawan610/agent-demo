@@ -74,17 +74,17 @@ def check_workflow_invariants(
     add(
         "request_to_plan_duration",
         request.days is None or final_plan.days == request.days,
-        "最终计划天数必须等于已确认需求。",
+        "The plan's day count must equal the confirmed request.",
     )
     add(
         "request_to_plan_destination",
         request.destination is None or final_plan.destination == request.destination,
-        "最终目的地必须等于已确认需求。",
+        "The final destination must equal the confirmed request.",
     )
     add(
         "request_to_plan_preferences",
         final_plan.preferences == request.preferences,
-        "最终偏好必须保留用户明确表达。",
+        "The plan must carry every preference the user stated.",
     )
 
     called = {record.tool_name for record in search_results.tool_calls}
@@ -100,47 +100,47 @@ def check_workflow_invariants(
     add(
         "search_plan_flights_executed_once",
         flight_call_count == len(search_plan.flight_queries),
-        "每个计划中的航班查询必须恰好执行一次。",
+        "Each planned flight query must run exactly once.",
     )
     add(
         "search_plan_hotels_executed_once",
         hotel_call_count == (1 if search_plan.hotel_query is not None else 0),
-        "计划中的酒店查询必须恰好执行一次。",
+        "A planned hotel query must run exactly once.",
     )
     add(
         "search_plan_food_executed_once",
         food_call_count == (1 if search_plan.food_query is not None else 0),
-        "计划中的餐饮查询必须恰好执行一次。",
+        "A planned dining query must run exactly once.",
     )
     services = set(request.requested_services)
     if "flights" not in services:
         add(
             "service_scope_flights",
             not ({"search_flights", "build_flight_search_link"} & called),
-            "未请求航班时不得调用航班工具。",
+            "Flight tools must not run when flights were not requested.",
         )
     if "hotels" not in services:
         add(
             "service_scope_hotels",
             not ({"search_hotels", "build_hotel_search_link"} & called),
-            "未请求酒店时不得调用酒店工具。",
+            "Hotel tools must not run when hotels were not requested.",
         )
     if "food" not in services and search_plan.food_query is None:
         add(
             "service_scope_food",
             "search_food" not in called,
-            "未请求餐饮时不得调用餐饮工具。",
+            "Dining tools must not run when dining was not requested.",
         )
 
     add(
         "flight_evidence_is_authoritative",
         final_plan.flights == search_results.flights,
-        "最终航班候选必须来自工具结果。",
+        "Final flight candidates must come from tool results.",
     )
     add(
         "hotel_evidence_is_authoritative",
         final_plan.hotels == search_results.hotels,
-        "最终酒店候选必须来自工具结果。",
+        "Final hotel candidates must come from tool results.",
     )
     food_evidence = (
         search_results.foods.data
@@ -152,7 +152,7 @@ def check_workflow_invariants(
     add(
         "food_evidence_is_authoritative",
         final_plan.food == food_evidence,
-        "最终餐饮候选必须来自工具结果，不能由模型凭空编造。",
+        "Final dining candidates must come from tool results, never invented by the model.",
     )
     expected_weather = (
         search_results.weather.data
@@ -164,7 +164,7 @@ def check_workflow_invariants(
     add(
         "weather_evidence_is_authoritative",
         final_plan.weather == expected_weather,
-        "最终天气必须来自天气工具结果，不能由模型补写。",
+        "Final weather must come from the weather tool, never written by the model.",
     )
     expected_routes = (
         search_results.routes.data
@@ -176,7 +176,7 @@ def check_workflow_invariants(
     add(
         "route_evidence_is_authoritative",
         final_plan.routes == expected_routes,
-        "最终路线必须来自路线工具结果，不能把模型描述当成路线事实。",
+        "Final routes must come from the routing tool; model prose is not a route fact.",
     )
     expected_knowledge_sources = []
     if (
@@ -198,7 +198,7 @@ def check_workflow_invariants(
         "knowledge_evidence_is_authoritative",
         [item.model_dump(mode="json") for item in final_plan.knowledge_sources]
         == expected_knowledge_sources,
-        "最终知识来源必须来自本地检索结果，不能由模型自行捏造引用。",
+        "Knowledge citations must come from local retrieval, never invented by the model.",
     )
     expected_activity_keys = {
         (activity.day, activity.provider_id or activity.name)
@@ -212,15 +212,15 @@ def check_workflow_invariants(
     add(
         "itinerary_evidence_is_authoritative",
         actual_activity_keys == expected_activity_keys,
-        "最终行程中的地点和日期必须来自工具分配结果，不能由模型新增或移动。",
+        "Itinerary places and days must come from the tool assignment; the model may not add or move them.",
     )
     if search_plan.route_enabled:
         add(
             "route_modes_are_authoritative",
             final_plan.transport_modes == search_plan.route_modes,
-            "最终交通方式必须等于已确认的 SearchPlan，且 transit 不能替换 driving。",
+            "Transport modes must equal the confirmed SearchPlan; transit may not replace driving.",
         )
-        days = request.days or 1
+        days = search_plan.activity_query.days if search_plan.activity_query is not None else (request.days or 1)
         expected_route_calls = len(search_plan.route_modes) * days
         actual_route_calls = sum(
             record.tool_name in {"optimize_day_route", "optimize_transit_route"}
@@ -229,7 +229,7 @@ def check_workflow_invariants(
         add(
             "route_profiles_are_executed_once_per_day",
             actual_route_calls == expected_route_calls,
-            "每个计划中的路线模式每天必须恰好执行一次。",
+            "Each planned route profile must run exactly once per day.",
         )
         driving_calls = sum(
             record.tool_name == "optimize_day_route"
@@ -241,14 +241,14 @@ def check_workflow_invariants(
         )
         add(
             "each_requested_route_mode_is_executed_once_per_day",
-            driving_calls == days
+            driving_calls == (days if "driving" in search_plan.route_modes else 0)
             and transit_calls == (days if "transit" in search_plan.route_modes else 0),
-            "驾车和公共交通必须分别按请求的模式逐天执行，不能用一种模式冒充另一种。",
+            "Driving and transit must each run per day as requested; one may not stand in for the other.",
         )
     add(
         "tool_trace_is_preserved",
         final_plan.tool_status == search_results.tool_calls,
-        "最终计划必须保留每次工具调用的状态。",
+        "The plan must preserve the status of every tool call.",
     )
 
     valid_days = (
@@ -262,12 +262,12 @@ def check_workflow_invariants(
     add(
         "activity_days_are_valid",
         activity_days <= valid_days,
-        "活动不能被分配到旅行天数之外。",
+        "Activities must not fall outside the trip's days.",
     )
     add(
         "route_days_are_valid",
         all(route.day in valid_days for route in final_plan.routes),
-        "路线不能被分配到旅行天数之外。",
+        "Routes must not fall outside the trip's days.",
     )
     add(
         "closed_activities_are_not_scheduled",
@@ -276,7 +276,7 @@ def check_workflow_invariants(
             for day in final_plan.itinerary
             for activity in day.activities
         ),
-        "已确认关闭的地点不能进入最终候选行程。",
+        "A place confirmed closed must not reach the itinerary.",
     )
 
     return checks

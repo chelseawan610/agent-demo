@@ -9,10 +9,10 @@ PATTERNS = (
     ("turn", re.compile(r"^(?:You can also reply in English\. Press Enter to finish\.\n)?> (?!\[debug)(\S.*)$")),
     ("route", re.compile(r"follow-up action=(\S+)")),
     ("plan", re.compile(r"^# (.+?)(?:（|$)")),
-    ("ask", re.compile(r"^(从哪个城市出发？|哪天出发.*|打算玩几天.*)$")),
-    ("reuse", re.compile(r"(查询条件未变)")),
-    ("stuck", re.compile(r"(信息仍然不完整)")),
-    ("gate", re.compile(r"(⚠ 检查未通过.*|（上一次生成未通过.*)")),
+    ("ask", re.compile(r"^(从哪个城市出发？|哪天出发.*|打算玩几天.*|Which city.*\?|What date.*\?|How many.*\?).*$")),
+    ("reuse", re.compile(r"(查询条件未变|query unchanged)")),
+    ("stuck", re.compile(r"(信息仍然不完整|Still incomplete)")),
+    ("gate", re.compile(r"(⚠ 检查未通过.*|（上一次生成未通过.*|! check failed.*|\(the previous draft failed.*)")),
     ("tool", re.compile(r"^\[tool\] (\w+)")),
 )
 

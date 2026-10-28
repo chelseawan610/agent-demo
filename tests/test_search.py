@@ -1,6 +1,10 @@
 import pytest
 
-from travel_agent.schemas.request import PreferenceSpec, TripRequest
+from travel_agent.schemas.request import (
+    ORIGIN,
+    PreferenceSpec,
+    TripRequest,
+)
 from travel_agent.schemas.evidence import GeoPoint, PlaceCandidate, ToolResult, WeatherDay
 from travel_agent.schemas.search import FlightQuery, SearchPlan
 from travel_agent.workflows.search import build_search_plan, execute_search_plan
@@ -55,7 +59,7 @@ def test_search_plan_carries_semantic_venue_mix_constraint():
 def test_incomplete_request_cannot_create_search_plan():
     request = TripRequest(destination="Tokyo")
 
-    with pytest.raises(ValueError, match="出发城市"):
+    with pytest.raises(ValueError, match=ORIGIN):
         build_search_plan(request)
 
 
@@ -496,3 +500,24 @@ def test_destination_failure_skips_preference_geocoding(monkeypatch):
         record.tool_name == "resolve_preference_place" and record.status == "skipped"
         for record in results.tool_calls
     )
+
+
+def test_weather_is_aligned_by_calendar_date_not_response_position(monkeypatch):
+    import travel_agent.workflows.search as workflow
+
+    monkeypatch.setattr(workflow, "resolve_destination", lambda _: ToolResult.ok("geo", GeoPoint(latitude=1, longitude=2)))
+    monkeypatch.setattr(workflow, "get_weather_forecast", lambda *_: ToolResult.ok("weather", [
+        WeatherDay(date="2099-10-02", weather_code=1, temperature_max_c=20, temperature_min_c=10, precipitation_probability_max=90),
+    ]))
+    monkeypatch.setattr(workflow, "search_attractions", lambda *a, **k: ToolResult.ok("places", []))
+    monkeypatch.setattr(workflow, "optimize_day_route", lambda *a: ToolResult.skipped("route", "no stops"))
+    captured = []
+
+    def assign(*_args, **kwargs):
+        captured.append(kwargs["rain_probability_by_day"])
+        return []
+
+    monkeypatch.setattr(workflow, "assign_activities", assign)
+    request = TripRequest(destination="City", requested_services=["guide"], start_date="2099-10-01", days=3)
+    execute_search_plan(build_search_plan(request))
+    assert captured == [[None, 90, None]]

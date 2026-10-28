@@ -54,9 +54,9 @@ def describe_failures(failures: list[WorkflowCheck]) -> str:
 
     lines = [f"- {check.name}：{check.message}" for check in failures]
     return (
-        "上一次生成没有通过程序的确定性检查：\n"
+        "The previous draft failed the program's deterministic checks:\n"
         + "\n".join(lines)
-        + "\n请在不改变任何工具事实的前提下重新生成叙述。"
+        + "\nRegenerate the narrative without changing any tool-provided fact."
     )
 
 
@@ -113,12 +113,12 @@ async def plan_with_invariant_gate(
 def _note(plan: TripPlan, failures: list[WorkflowCheck], *, degraded: bool) -> None:
     """Record the violation in the plan itself, not only in debug output."""
 
-    names = "、".join(check.name for check in failures) or "未知检查"
+    names = ", ".join(check.name for check in failures) or "unknown check"
     message = (
-        f"确定性检查未通过（{names}），已改用工具证据直接组装本页事实；"
-        "叙述文字可能不如模型版本流畅。"
+        f"Deterministic checks failed ({names}); the facts on this page were "
+        "assembled directly from tool evidence, so the wording is plainer."
         if degraded
-        else f"确定性检查未通过（{names}），请以工具结果和下方来源为准。"
+        else f"Deterministic checks failed ({names}); rely on the tool results and sources below."
     )
     if message not in plan.notes:
         plan.notes.append(message)

@@ -9,18 +9,21 @@ inventing a second mechanism.
 
 import pytest
 
-from travel_agent.schemas.request import TripRequest
+from travel_agent.schemas.request import (
+    ORIGIN,
+    TripRequest,
+)
 from travel_agent.workflows.intake import apply_evidence_guards, drop_uncited_fields
 
 
 FULL = ["flights", "hotels", "activities", "guide"]
 
 MALDIVES_ZH = (
-    "我想要2026-10-29去马尔代夫玩3天，一定要去马富士岛，"
+    "我想要2099-10-29去马尔代夫玩3天，一定要去马富士岛，"
     "但我预算只有3万你帮我规划整个行程。"
 )
 MALDIVES_EN = (
-    "I want to go to the Maldives for 3 days on 2026-10-29, I must visit "
+    "I want to go to the Maldives for 3 days on 2099-10-29, I must visit "
     "Maafushi Island, my budget is only 30000 CNY."
 )
 
@@ -127,7 +130,7 @@ def test_a_cleared_field_returns_to_the_normal_clarification_flow():
     guarded = drop_uncited_fields(_request(origin="Tokyo"), MALDIVES_ZH)
 
     assert guarded.status == "needs_clarification"
-    assert "出发城市" in guarded.missing_fields
+    assert ORIGIN in guarded.missing_fields
 
 
 # --- Flight type -----------------------------------------------------------
@@ -218,7 +221,7 @@ def test_a_bare_answer_to_our_own_question_needs_no_citation():
     # "上海" cites nothing, but it is the user's answer to the question the
     # program itself asked, so the value stands.
     guarded = apply_evidence_guards(
-        _request(origin="Shanghai"), "上海", requested_fields={"出发城市"}
+        _request(origin="Shanghai"), "上海", requested_fields={ORIGIN}
     )
 
     assert guarded.origin == "Shanghai"
@@ -228,7 +231,7 @@ def test_an_unasked_field_still_needs_a_citation_in_a_clarification_turn():
     guarded = apply_evidence_guards(
         _request(origin="Shanghai", budget={"amount": 9000, "currency": "CNY"}),
         "上海",
-        requested_fields={"出发城市"},
+        requested_fields={ORIGIN},
     )
 
     assert guarded.origin == "Shanghai"
@@ -241,8 +244,8 @@ def test_an_unasked_field_still_needs_a_citation_in_a_clarification_turn():
 @pytest.mark.parametrize(
     "text, date_quote, budget_quote",
     [
-        (MALDIVES_ZH, "2026-10-29", "预算只有3万"),
-        (MALDIVES_EN, "2026-10-29", "budget is only 30000 CNY"),
+        (MALDIVES_ZH, "2099-10-29", "预算只有3万"),
+        (MALDIVES_EN, "2099-10-29", "budget is only 30000 CNY"),
     ],
 )
 def test_the_original_sentence_is_not_disturbed(text, date_quote, budget_quote):
@@ -262,4 +265,4 @@ def test_the_original_sentence_is_not_disturbed(text, date_quote, budget_quote):
     assert guarded.requested_services == FULL
     # The origin genuinely was absent, so it must still be asked for.
     assert guarded.origin is None
-    assert "出发城市" in guarded.missing_fields
+    assert ORIGIN in guarded.missing_fields

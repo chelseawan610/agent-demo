@@ -27,7 +27,7 @@ def resolve_preference_place(
     place_name: str | None = None,
     place_type: PlaceType = "other",
 ) -> ToolResult[PlaceCandidate]:
-    """Resolve a named entity using typed intent, exact identity, and geography.
+    """Resolve a named entity using provider names, typed intent, and geography.
 
     Language interpretation belongs to Intake. Photon receives its search query
     and destination bias; this adapter checks provider names and OSM categories.
@@ -40,13 +40,9 @@ def resolve_preference_place(
     )
     try:
         queries = list(dict.fromkeys(query for query in (search_query, place_name) if query))
-        identities = {
-            _normalized_place_name(name)
-            for name in (label, place_name, search_query)
-            if name and _normalized_place_name(name)
-        }
+        identity_names = [name for name in (place_name, label, search_query) if name]
         error_code = "not_found"
-        relevant: list[dict] = []
+        relevant: list[tuple[int, dict]] = []
         for query in queries[:2]:
             params: dict[str, object] = {"q": query, "limit": 5, "lang": "en"}
             if destination_point is not None:
@@ -67,18 +63,21 @@ def resolve_preference_place(
                     if destination_point is not None and _distance_km(destination_point, point) > 100:
                         error_code = "out_of_area"
                         continue
-                    names = {
-                        _normalized_place_name(properties[key])
-                        for key in ("name", "name:en", "name:local")
-                        if isinstance(properties.get(key), str)
-                    }
-                    if not names & identities:
+                    match_score = max(
+                        (
+                            _place_identity_score(provider_name, expected_name)
+                            for provider_name in _provider_names(properties)
+                            for expected_name in identity_names
+                        ),
+                        default=0,
+                    )
+                    if not match_score:
                         error_code = "not_relevant"
                         continue
                     if not _matches_place_type(properties, place_type):
                         error_code = "type_mismatch"
                         continue
-                    relevant.append(item)
+                    relevant.append((match_score, item))
                 except (KeyError, IndexError, TypeError, ValueError):
                     error_code = "invalid_response"
             if relevant:
@@ -86,16 +85,20 @@ def resolve_preference_place(
         if not relevant:
             return ToolResult[PlaceCandidate].unavailable(
                 "Photon", error_code,
-                f"未找到名称、类型和目的地范围均可核验的地点：{label}；未用相似商家替代。",
+                f"No place matched the name, type and destination for: {label}. No similar business was substituted.",
                 attribution=OSM_ATTRIBUTION,
             )
-        if any(_distance_km(_feature_point(relevant[0]), _feature_point(item)) > 1 for item in relevant[1:]):
+        # Prefer an exact provider name/alias over a weaker shortened-name
+        # match before checking ambiguity. Never just take the nearest result.
+        best_score = max(score for score, _ in relevant)
+        candidates = [item for score, item in relevant if score == best_score]
+        if any(_distance_km(_feature_point(candidates[0]), _feature_point(item)) > 1 for item in candidates[1:]):
             return ToolResult[PlaceCandidate].unavailable(
-                "Photon", "ambiguous_place", f"存在多个同名且相距较远的地点，需确认具体位置：{label}",
+                "Photon", "ambiguous_place", f"Several distant places share this name; the exact location must be confirmed: {label}",
                 attribution=OSM_ATTRIBUTION,
             )
         feature = min(
-            relevant,
+            candidates,
             key=lambda item: _distance_km(destination_point, _feature_point(item)) if destination_point else 0,
         )
         properties = feature.get("properties", {})
@@ -108,7 +111,7 @@ def resolve_preference_place(
                 name=label,
                 category=properties.get("osm_value") or properties.get("osm_key") or "place",
                 point=GeoPoint(latitude=latitude, longitude=longitude),
-                provider_id=f"{osm_type}:{osm_id}",
+                provider_id=_osm_provider_id(osm_type, osm_id),
                 source="Photon / OpenStreetMap",
                 verified=True,
                 route_eligible=_route_eligible(properties),
@@ -147,6 +150,47 @@ def _normalized_place_name(name: str) -> str:
     """Compare identity with Unicode/case/spacing normalization, not keywords."""
 
     return "".join(character for character in unicodedata.normalize("NFKC", name).casefold() if character.isalnum())
+
+
+def _provider_names(properties: dict) -> list[str]:
+    """Use provider-supplied multilingual names and aliases, not invented ones."""
+
+    return [
+        name.strip()
+        for key, value in properties.items()
+        if key in {"name", "alt_name", "official_name", "short_name", "int_name", "loc_name"}
+        or key.startswith("name:")
+        for name in (value.split(";") if isinstance(value, str) else [])
+        if name.strip()
+    ]
+
+
+def _place_identity_score(provider_name: str, expected_name: str) -> int:
+    """Rank name evidence; this is a guard, not a semantic identity oracle.
+
+    An exact provider name/alias is stronger than a conservative abbreviation.
+    A shortened name needs at least two shared tokens and two-thirds coverage,
+    and cannot introduce extra tokens. Unrelated synonyms remain unresolved
+    rather than silently replacing the requested place. Geography and type are
+    independent checks; no particular city or landmark is hard-coded here.
+    """
+
+    if _normalized_place_name(provider_name) == _normalized_place_name(expected_name):
+        return 2
+    provider_tokens = set(_name_tokens(provider_name))
+    expected_tokens = set(_name_tokens(expected_name))
+    return int(
+        len(provider_tokens) >= 2
+        and provider_tokens < expected_tokens
+        and len(provider_tokens) / len(expected_tokens) >= 2 / 3
+    )
+
+
+def _osm_provider_id(osm_type: str, osm_id: object) -> str:
+    """Photon and Overpass use different spellings for the same OSM types."""
+
+    element_type = {"N": "node", "W": "way", "R": "relation"}.get(osm_type, osm_type)
+    return f"{element_type}:{osm_id}"
 
 
 def _matches_place_type(properties: dict, expected: PlaceType) -> bool:
@@ -218,12 +262,7 @@ def _distance_km(first: GeoPoint, second: GeoPoint) -> float:
 def _name_tokens(value: str) -> list[str]:
     """Tokenize provider names without assuming a particular user language."""
 
-    return [
-        token.casefold()
-        for token in re.findall(
-            r"[a-z0-9]+|[\u4e00-\u9fff]+|[\u3040-\u30ff]+", value.casefold()
-        )
-    ]
+    return re.findall(r"[^\W_]+", unicodedata.normalize("NFKC", value).casefold())
 
 
 def _venue_type(tags: dict, category: str) -> str:
@@ -264,7 +303,7 @@ def _place_from_element(element: dict, default_category: str) -> PlaceCandidate 
         name=name,
         category=category,
         point=GeoPoint(latitude=point_data["lat"], longitude=point_data["lon"]),
-        provider_id=f"{element.get('type', 'unknown')}:{element.get('id')}",
+        provider_id=_osm_provider_id(element.get("type", "unknown"), element.get("id")),
         source="Overpass / OpenStreetMap",
         verified=True,
         description=tags.get("description:en") or tags.get("description", ""),

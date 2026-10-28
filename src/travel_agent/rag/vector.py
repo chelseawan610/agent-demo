@@ -168,14 +168,15 @@ class ChromaKnowledgeBase:
         min_score: float = 0.0,
         max_chars: int = 4500,
     ) -> list[KnowledgeHit]:
-        if not query.strip() or not self._chunks:
+        limit = max(0, min(top_k, 10))
+        if not query.strip() or not self._chunks or limit == 0 or max_chars <= 0:
             return []
         result = self._collection.query(
             query_embeddings=[self._embedder.encode_query(query)],
             # Fetch a wider candidate pool before applying section scope. A
             # destination filter applied after only top_k results could discard
             # all relevant generic or destination-specific chunks.
-            n_results=min(max(top_k * 3, top_k), 50, self._collection.count()),
+            n_results=min(limit * 3, 50, self._collection.count()),
             include=["documents", "metadatas", "distances"],
         )
         ids = (result.get("ids") or [[]])[0]
@@ -193,8 +194,8 @@ class ChromaKnowledgeBase:
             if not section_matches_scope(str(metadata.get("section", "")), scope):
                 continue
             text = documents[index] if index < len(documents) else ""
-            if hits and used_chars + len(text) > max_chars:
-                break
+            if used_chars + len(text) > max_chars:
+                continue
             hits.append(
                 KnowledgeHit(
                     chunk_id=str(chunk_id),
@@ -207,6 +208,8 @@ class ChromaKnowledgeBase:
                 )
             )
             used_chars += len(text)
+            if len(hits) >= limit:
+                break
         return hits
 
 
@@ -267,8 +270,8 @@ class HybridKnowledgeBase:
         used_chars = 0
         for chunk_id in ordered[: max(0, min(top_k, 10))]:
             hit = by_id[chunk_id]
-            if hits and used_chars + len(hit.text) > max_chars:
-                break
+            if used_chars + len(hit.text) > max_chars:
+                continue
             hits.append(hit.model_copy(update={"score": round(fused[chunk_id], 6)}))
             used_chars += len(hit.text)
         return hits

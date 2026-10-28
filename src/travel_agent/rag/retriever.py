@@ -180,7 +180,10 @@ class MarkdownKnowledgeBase:
         if not query_tokens or not chunks:
             return []
         query_terms = set(query_tokens)
-        total_documents = len(chunks)
+        # Frequencies and average length were computed over the full index.
+        # Scope only filters eligible hits; mixing scoped N with global df
+        # makes common terms acquire negative BM25 scores.
+        total_documents = len(self._chunks)
         scored: list[tuple[float, _Chunk, list[str]]] = []
         for chunk in chunks:
             frequencies = Counter(chunk.tokens)
@@ -210,8 +213,8 @@ class MarkdownKnowledgeBase:
         hits: list[KnowledgeHit] = []
         used_chars = 0
         for score, chunk, matched in scored[: max(0, min(top_k, 10))]:
-            if hits and used_chars + len(chunk.text) > max_chars:
-                break
+            if used_chars + len(chunk.text) > max_chars:
+                continue
             hit = KnowledgeHit(
                 chunk_id=chunk.chunk_id,
                 source=chunk.source,

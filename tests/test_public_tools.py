@@ -75,7 +75,7 @@ def test_open_meteo_weather_skips_dates_outside_forecast_window(monkeypatch):
     )
 
     assert result.status == "skipped"
-    assert "16 天预报窗口" in result.message
+    assert "16-day forecast window" in result.message
 
 
 def test_photon_and_overpass_normal_empty_and_timeout(monkeypatch):

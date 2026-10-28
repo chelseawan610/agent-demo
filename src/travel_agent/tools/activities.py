@@ -34,6 +34,8 @@ def assign_activities(
         return []
     preference_labels = preference_labels or []
     preferred: list[PlaceCandidate] = []
+    # provider_id -> the 1-based day the user asked for, when they named one.
+    requested_day: dict[str, int] = {}
     if preference_details is not None:
         # The executor preserves the order of preference_details. Only a
         # concrete ``place`` can become a map stop. Semantic interests such
@@ -43,6 +45,8 @@ def assign_activities(
                 continue
             if result.status == "ok" and result.data is not None:
                 preferred.append(result.data)
+                if detail.preferred_day is not None:
+                    requested_day[result.data.provider_id] = detail.preferred_day
     else:
         # Backward-compatible direct callers can still pass provider results
         # without metadata. Failed lookups are never fake POIs.
@@ -65,8 +69,16 @@ def assign_activities(
     capacities = _build_capacities(days, len(ordered_places), day_capacities)
 
     buckets: list[list[PlaceCandidate]] = [[] for _ in range(days)]
+    # A user who said "第3天想去双子塔" gets that day when it exists and the
+    # place is not closed then; the rest of the schedule fills in around it.
+    ordered_places.sort(key=lambda item: item.provider_id not in requested_day)
     for place in ordered_places:
         eligible_days = _eligible_days(place, days, start_date)
+        wanted = requested_day.get(place.provider_id)
+        if wanted is not None and 1 <= wanted <= days:
+            index = wanted - 1
+            if index in eligible_days:
+                eligible_days = [index]
         target_day = _choose_day(
             place,
             buckets,
@@ -160,7 +172,7 @@ def _eligible_days(
         return [index for index, status in enumerate(statuses) if status == "open"]
     # Unsupported expressions remain schedulable but visibly unverified.
     if "unknown" in statuses:
-        return list(range(days))
+        return [index for index, status in enumerate(statuses) if status == "unknown"]
     # A simple schedule says the venue is closed on every requested day.
     return []
 
@@ -273,14 +285,17 @@ def _default_visit_minutes(category: str) -> int:
 
 def _activity_note(place: PlaceCandidate, status: str) -> str:
     if not place.route_eligible:
-        return "该坐标为区域中心，并非已核验的到访入口；未用于道路或公共交通路线。"
+        return (
+            "This coordinate is an area centroid, not a verified entrance; it "
+            "was excluded from road and transit routing."
+        )
     if status == "open" and place.opening_hours:
         return (
-            f"营业时间：{place.opening_hours}（来自 "
-            f"{place.opening_hours_source or place.source}）"
+            f"Open {place.opening_hours} (from "
+            f"{place.opening_hours_source or place.source})"
         )
     if status == "closed":
-        return "该地点在计划日期显示为关闭，未安排到当天。"
+        return "Closed on the planned date, so it was not scheduled then."
     if place.opening_hours:
-        return "已获得营业时间原文，但日期规则未能安全解析，请以官网为准。"
-    return "营业时间未核验，请以官方信息为准。"
+        return "Opening hours were returned but could not be parsed safely; check the official site."
+    return "Opening hours unverified; check the official source."

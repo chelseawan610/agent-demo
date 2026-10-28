@@ -23,6 +23,7 @@ from travel_agent.app.trace import TokenPricing, TraceRecorder
 from travel_agent.clients.fallback import FallbackAgent
 from travel_agent.config import Settings
 from travel_agent.schemas.trip import TripPlan
+from travel_agent.schemas import request as request_fields
 from travel_agent.schemas.request import TripRequest
 from travel_agent.memory.store import JsonMemoryStore, durable_preferences
 from travel_agent.schemas.checkpoint import WorkflowCheckpoint
@@ -92,16 +93,19 @@ def friendly_error(error: Exception) -> str:
     name = type(error).__name__
     text = str(error)
     if "Timeout" in name or "timeout" in text.lower():
-        return "模型响应超时。可以直接重试，或用 --model 换一个更快的模型。"
+        return "The model timed out. Retry, or pick a faster --model."
     if "401" in text or "Authentication" in name or "Unauthorized" in text:
-        return "模型密钥无效，请检查 .env 里的 LLM_API_KEY。"
+        return "The model key was rejected. Check LLM_API_KEY in .env."
     if "429" in text or "RateLimit" in name:
-        return "模型被限流了，稍后重试，或配置 --fallback-model。"
+        return "The model is rate limited. Retry later, or set --fallback-model."
     if "Validation" in name:
-        return "模型返回的结构不符合 schema，本次已记录到日志；重试或换模型通常可以解决。"
+        return (
+            "The model returned a structure that failed validation; it is in "
+            "the run log. Retrying or switching models usually resolves it."
+        )
     if "Connection" in name or "Connection" in text:
-        return "无法连接模型服务，请检查网络或 LLM_BASE_URL。"
-    return f"运行失败（{name}）。加 --debug 可以看完整信息。"
+        return "Could not reach the model service. Check the network or LLM_BASE_URL."
+    return f"Run failed ({name}). Use --debug for the full error."
 
 
 def report_gate(outcome) -> None:
@@ -112,11 +116,11 @@ def report_gate(outcome) -> None:
     """
 
     if outcome.regenerated:
-        print("（上一次生成未通过确定性检查，已重新生成一次）")
+        print("(the previous draft failed a deterministic check; regenerated once)")
     if outcome.degraded:
-        print("（重新生成后仍未通过，已改用工具证据直接组装）")
+        print("(still failing after regeneration; assembled from tool evidence instead)")
     for check in outcome.failures:
-        print(f"⚠ 检查未通过 [{check.layer}/{check.category}] {check.name}：{check.message}")
+        print(f"! check failed [{check.layer}/{check.category}] {check.name}: {check.message}")
 
 
 def report_review(plan) -> None:
@@ -130,8 +134,11 @@ def report_review(plan) -> None:
     review = getattr(plan, "review", None)
     if review is None or review.status != "needs_revision":
         return
-    print("⚠ 只读复核认为本计划需要修订（不阻止输出，事实仍以工具结果为准）：")
-    for issue in review.issues or ["复核未给出具体问题。"]:
+    print(
+        "! the read-only reviewer flagged this plan for revision "
+        "(not blocking; tool results remain authoritative):"
+    )
+    for issue in review.issues or ["The reviewer gave no specific issue."]:
         print(f"  - {issue}")
 
 
@@ -149,8 +156,8 @@ def render_failure_summary(tool_results) -> str:
         if record.status in {"error", "unavailable"}
     ]
     if not failures:
-        return "[debug] FailurePoints：无（所有工具调用成功或被显式跳过）"
-    lines = ["[debug] FailurePoints："]
+        return "[debug] FailurePoints: none (every tool call succeeded or was skipped)"
+    lines = ["[debug] FailurePoints:"]
     for record in failures:
         lines.append(
             f"  stage={record.stage} tool={record.tool_name} "
@@ -178,14 +185,14 @@ def _build_knowledge_retriever(args: argparse.Namespace) -> KnowledgeRetriever |
 # computed deterministically by ``TripRequest.required_missing_fields``, so
 # asking like a person costs no extra model call; only the wording changes.
 CLARIFICATION_QUESTIONS = {
-    "目的地": "你想去哪个城市？",
-    "出发城市": "从哪个城市出发？",
-    "出发日期": "哪天出发？（例如 10月1号，或 2026-10-01）",
-    "入住日期": "哪天入住？（例如 10月1号）",
-    "游玩天数或回程/退房日期": "打算玩几天，或者哪天回来？",
-    "回程日期或游玩天数": "打算玩几天，或者哪天回来？",
-    "游玩天数或入住晚数/退房日期": "住几晚，或者哪天退房？",
-    "入住晚数或退房日期": "住几晚，或者哪天退房？",
+    request_fields.DESTINATION: "Which city do you want to visit?",
+    request_fields.ORIGIN: "Which city are you departing from?",
+    request_fields.DEPARTURE_DATE: "What date do you leave? (e.g. 2026-10-01)",
+    request_fields.CHECK_IN_DATE: "What date do you check in? (e.g. 2026-10-01)",
+    request_fields.TRIP_LENGTH_OR_RETURN: "How many days, or when do you return?",
+    request_fields.RETURN_OR_TRIP_LENGTH: "How many days, or when do you return?",
+    request_fields.TRIP_LENGTH_OR_NIGHTS: "How many nights, or when do you check out?",
+    request_fields.NIGHTS_OR_CHECK_OUT: "How many nights, or when do you check out?",
 }
 
 
@@ -194,11 +201,11 @@ def build_clarification_question(request: TripRequest) -> str:
 
     missing = request.missing_fields
     if not missing:
-        return "还需要补充一点信息。"
+        return "A little more information is needed."
     head = missing[0]
-    question = CLARIFICATION_QUESTIONS.get(head, f"请补充{head}。")
+    question = CLARIFICATION_QUESTIONS.get(head, f"Please provide the {head}.")
     if len(missing) > 1:
-        question += f"（如果方便，也可以一起说：{'、'.join(missing[1:])}）"
+        question += f" (if convenient, also: {', '.join(missing[1:])})"
     return question
 
 
@@ -217,10 +224,10 @@ def make_clarification_asker(debug: bool = False):
 
 
 SERVICE_TYPE_HINTS = {
-    "1": "完整旅行规划",
-    "2": "往返机票查询",
-    "3": "酒店查询",
-    "4": "攻略或活动查询",
+    "1": "full trip plan",
+    "2": "round-trip flights",
+    "3": "hotels",
+    "4": "guide and activities",
 }
 
 
@@ -228,14 +235,16 @@ async def ask_initial_request() -> str:
     """Show the service menu, then keep the actual request in natural language."""
 
     print(render_service_menu())
-    selection = await read_user_line("请选择编号，或直接输入你的旅行需求：")
+    selection = await read_user_line(
+        "Pick a number, or just describe your trip (Chinese or English): "
+    )
     selection = selection.strip()
     if selection not in SERVICE_TYPE_HINTS:
         return selection
-    details = await read_user_line("请补充具体需求：")
+    details = await read_user_line("Describe what you need: ")
     return (
-        f"用户选择服务类型：{SERVICE_TYPE_HINTS[selection]}\n"
-        f"用户具体需求：{details.strip()}"
+        f"Selected service type: {SERVICE_TYPE_HINTS[selection]}\n"
+        f"Request: {details.strip()}"
     )
 
 
@@ -287,7 +296,7 @@ async def run_offline(args: argparse.Namespace) -> None:
         )
         return
 
-    print("离线模式：不调用 LLM，只执行结构化 workflow 和免费旅行工具。")
+    print("Offline mode: no model call; running the typed workflow and free tools only.")
     search_plan = build_search_plan(request)
     if checkpoint_store is not None:
         checkpoint_store.save(
@@ -380,149 +389,149 @@ async def main() -> int:
         description="Run the travel planning agent",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         epilog=(
-            "普通运行直接执行本模块即可；--debug、--offline、--review 和 RAG 参数 "
-            "主要用于开发、教学和评测。多个本地用户共用 Memory 文件时，使用 "
-            "--user-id 覆盖默认的 local-user。"
+            "A normal run needs no flags. --debug, --offline, --review and the "
+            "RAG options are for development, teaching and evaluation. When "
+            "several local users share one memory file, override --user-id."
         ),
     )
-    common = parser.add_argument_group("常用运行参数")
+    common = parser.add_argument_group("common")
     common.add_argument(
         "--mode",
         choices=["auto", "direct", "convert", "text"],
         default=os.getenv("TRIP_OUTPUT_MODE", "auto").lower(),
-        help="模型输出策略；普通运行保持 auto 即可",
+        help="Model structured-output strategy; leave on auto",
     )
     common.add_argument(
         "--output",
         choices=["markdown", "json"],
         default="markdown",
-        help="最终展示格式；JSON 适合程序和评测读取",
+        help="Output format; JSON is for programs and evaluation",
     )
     common.add_argument(
         "--user-id",
         default="local-user",
-        help="Memory 使用的本地用户键；多人共用时手动覆盖",
+        help="Local user key for memory; override when sharing a file",
     )
     common.add_argument(
         "--no-follow-up",
         action="store_true",
-        help="输出计划后立即退出，不进入多轮修改；评测和脚本使用",
+        help="Exit after the plan; no follow-up turns (for scripts and evaluation)",
     )
     common.add_argument(
         "--follow-up",
         action="store_true",
-        help="即使输入不是终端也进入多轮修改；用于脚本化录制对话",
+        help="Enter follow-up turns even when input is piped (for recording a conversation)",
     )
 
-    diagnostics = parser.add_argument_group("调试和评测参数")
+    diagnostics = parser.add_argument_group("debugging and evaluation")
     diagnostics.add_argument(
         "--debug",
         action="store_true",
-        help="打印需求、SearchPlan、工具记录和确定性检查",
+        help="Print the request, SearchPlan, tool records and deterministic checks",
     )
     diagnostics.add_argument(
         "--debug-prompts",
         action="store_true",
-        help="打印发送给 LLM 的动态消息和结构化输出选项",
+        help="Print the dynamic messages and response_format sent to the model",
     )
     diagnostics.add_argument(
         "--offline",
         action="store_true",
-        help="跳过 LLM；必须同时提供 --request-json",
+        help="Skip the model; requires --request-json",
     )
     diagnostics.add_argument(
         "--request-json",
-        help="结构化 TripRequest JSON，或使用 @path/to/request.json",
+        help="A structured TripRequest JSON, or @path/to/request.json",
     )
     diagnostics.add_argument(
         "--review",
         action="store_true",
-        help="计划完成后额外运行一次只读 MAF Reviewer",
+        help="Run one extra read-only reviewer pass after the plan",
     )
 
-    model_options = parser.add_argument_group("模型和记录参数")
+    model_options = parser.add_argument_group("model and logging")
     model_options.add_argument(
         "--model",
-        help="临时覆盖 .env 中的 LLM_MODEL",
+        help="Override LLM_MODEL for this run",
     )
     model_options.add_argument(
         "--fallback-model",
-        help="主模型发生可重试 provider 错误时使用的备用模型",
+        help="Fallback model for retryable provider errors",
     )
     model_options.add_argument(
         "--log-file",
-        help="将每次运行的脱敏 JSONL 记录追加到指定文件",
+        help="Append a redacted JSONL record of each run to this file",
     )
     model_options.add_argument(
         "--log-input",
         action="store_true",
-        help="把原始用户输入写入日志；默认关闭以减少隐私风险",
+        help="Write the raw user input to the log (off by default)",
     )
     model_options.add_argument(
         "--log-content",
         action="store_true",
-        help="在轨迹中保存有限长度的 LLM 输出预览",
+        help="Keep a bounded preview of model output in the trajectory",
     )
 
-    state_options = parser.add_argument_group("本地状态参数")
+    state_options = parser.add_argument_group("local state")
     state_options.add_argument(
         "--memory-file",
-        help="可选的本地 JSON Memory 文件；不传则不保存长期偏好",
+        help="Optional local JSON memory file; without it nothing is persisted",
     )
     state_options.add_argument(
         "--forget-memory",
         action="store_true",
-        help="运行前删除当前 user-id 的全部偏好",
+        help="Delete all stored preferences for this user-id before running",
     )
     state_options.add_argument(
         "--checkpoint-file",
-        help="可选的本地 workflow checkpoint 文件",
+        help="Optional local workflow checkpoint file",
     )
     state_options.add_argument(
         "--resume",
         action="store_true",
-        help="从 searched checkpoint 继续，或直接渲染 complete checkpoint",
+        help="Resume a searched checkpoint, or render a complete one",
     )
 
-    rag_options = parser.add_argument_group("RAG 参数")
+    rag_options = parser.add_argument_group("RAG")
     rag_options.add_argument(
         "--knowledge-dir",
         default="knowledge",
-        help="本地 Markdown 知识库目录",
+        help="Local Markdown knowledge directory",
     )
     rag_options.add_argument(
         "--no-rag",
         action="store_true",
-        help="本次运行关闭知识检索；主要用于对照评测",
+        help="Disable knowledge retrieval for this run",
     )
     rag_options.add_argument(
         "--rag-engine",
         choices=["hybrid", "vector", "bm25"],
         default=os.getenv("RAG_ENGINE", "hybrid"),
-        help="RAG 引擎；默认 hybrid，缺少向量依赖时降级为 BM25",
+        help="RAG engine; hybrid by default, falling back to BM25",
     )
     rag_options.add_argument(
         "--rag-model",
         default=os.getenv("RAG_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
-        help="vector/hybrid 使用的 embedding 模型",
+        help="Embedding model used by vector/hybrid retrieval",
     )
     rag_options.add_argument(
         "--rag-db-dir",
         default=os.getenv("RAG_DB_DIR", ".local/chroma_rag"),
-        help="Chroma 向量索引目录",
+        help="Chroma vector index directory",
     )
     args = parser.parse_args()
 
     if args.offline and not args.request_json:
-        parser.error("--offline 必须同时提供 --request-json")
+        parser.error("--offline requires --request-json")
     if args.request_json and not args.offline:
-        parser.error("--request-json 只能和 --offline 一起使用")
+        parser.error("--request-json is only valid with --offline")
     if args.resume and not args.checkpoint_file:
-        parser.error("--resume 必须同时提供 --checkpoint-file")
+        parser.error("--resume requires --checkpoint-file")
     if args.forget_memory and not args.memory_file:
-        parser.error("--forget-memory 必须同时提供 --memory-file")
+        parser.error("--forget-memory requires --memory-file")
     if (args.log_input or args.log_content) and not args.log_file:
-        parser.error("--log-input/--log-content 必须同时提供 --log-file")
+        parser.error("--log-input/--log-content require --log-file")
 
     args.run_id = new_run_id()
 
@@ -531,7 +540,7 @@ async def main() -> int:
         try:
             checkpoint = CheckpointStore(args.checkpoint_file).load()
         except Exception as error:
-            print(f"读取 checkpoint 失败：{type(error).__name__}: {error}")
+            print(f"Could not read the checkpoint: {type(error).__name__}: {error}")
             return 1
         if checkpoint.phase == "complete" and checkpoint.final_plan is not None:
             if args.output == "json":
@@ -547,8 +556,8 @@ async def main() -> int:
             return 0
         if checkpoint.phase != "searched" or checkpoint.search_plan is None or checkpoint.search_results is None:
             print(
-                f"checkpoint 当前阶段为 {checkpoint.phase}，需要 searched 或 complete "
-                "checkpoint 才能恢复。"
+                f"The checkpoint is at phase {checkpoint.phase}; resuming needs a "
+                "searched or complete checkpoint."
             )
             return 1
         resume_checkpoint = checkpoint
@@ -565,11 +574,11 @@ async def main() -> int:
         try:
             await run_offline(args)
         except Exception as error:
-            print(f"离线 workflow 失败：{type(error).__name__}: {error}")
+            print(f"Offline workflow failed: {friendly_error(error)}")
             return 1
         return 0
 
-    print("正在初始化旅行 Agent...")
+    print("Starting the travel agent...")
     primary_model = args.model or os.getenv("LLM_MODEL")
     fallback_model = args.fallback_model or os.getenv("LLM_FALLBACK_MODEL")
     settings = Settings.from_env(output_mode=args.mode, model=args.model)
@@ -616,7 +625,7 @@ async def main() -> int:
         if args.review
         else None
     )
-    print("Agent 已就绪。")
+    print("Agent ready.")
 
     request = (
         resume_checkpoint.original_request
@@ -643,11 +652,11 @@ async def main() -> int:
             print("[debug] user_message:")
             print(prompt)
 
-    print("正在请求模型，请稍候...")
+    print("Calling the model, please wait...")
 
     try:
         if resume_checkpoint is not None:
-            print("正在从 searched checkpoint 恢复，跳过需求解析和外部工具调用...")
+            print("Resuming from a searched checkpoint; skipping intake and tools...")
             trip_request = resume_checkpoint.request
             search_plan = resume_checkpoint.search_plan
             tool_results = resume_checkpoint.search_results
@@ -672,7 +681,7 @@ async def main() -> int:
                 on_trace=trace.record_llm,
             )
         if args.debug:
-            print("\n[debug] 程序实际收到的输入：")
+            print("\n[debug] raw input received:")
             print(repr(request))
             print("[debug] TripRequest：")
             print(trip_request.model_dump_json(indent=2))
@@ -734,7 +743,7 @@ async def main() -> int:
                     )
                 )
         if search_plan is None or tool_results is None:
-            raise RuntimeError("checkpoint 缺少 SearchPlan 或 SearchResults")
+            raise RuntimeError("the checkpoint has no SearchPlan or SearchResults")
         if args.debug:
             print("[debug] ToolCallRecord：")
             print(
@@ -865,7 +874,7 @@ async def main() -> int:
         )
         return 1
 
-    print("模型已返回结果。")
+    print("Model responded.")
     write_run_record(
         args.log_file,
         run_id=args.run_id,
@@ -907,7 +916,7 @@ async def main() -> int:
     # Structured modes are intentionally strict: a text fallback here
     # would make downstream JSON/database/evaluation code unreliable.
     if not isinstance(result, TripPlan):
-        print("结构化 workflow 返回了非 TripPlan 结果。")
+        print("The structured workflow returned something other than a TripPlan.")
         return 1
     show(result)
 
@@ -929,10 +938,11 @@ async def main() -> int:
         spoken = "\n".join(f"{i}. {t}" for i, t in enumerate(user_turns, 1))
         revised = await extract_trip_request(
             intake_agent,
-            "用户按时间顺序说过的全部内容（只读取用户原文）：\n"
+            "Everything the user has said, in order (user text only):\n"
             f"{spoken}\n\n"
-            f"用户最新的修改要求：\n{latest}\n\n"
-            "请只从以上用户文字提取字段；若与之前冲突，以最新要求为准。",
+            f"The user's latest change:\n{latest}\n\n"
+            "Extract fields only from the user text above. Where a later turn "
+            "conflicts with an earlier one, the latest wins.",
             on_prompt=prompt_observer,
             on_trace=trace.record_llm,
         )
@@ -944,9 +954,9 @@ async def main() -> int:
         try:
             answer = (
                 await read_user_line(
-                    "\n还要调整吗？（例如：改成4天 / 第二天写详细点 / "
-                    "某个地方为什么没安排；直接回车结束）\n"
-                    "You can also reply in English. Press Enter to finish.\n> "
+                    "\nAnything to change? (e.g. make it 4 days / more detail "
+                    "on day two / why isn't X scheduled). Chinese or English. "
+                    "Press Enter to finish.\n> "
                 )
             ).strip()
         except (EOFError, KeyboardInterrupt):
@@ -968,11 +978,17 @@ async def main() -> int:
             return 0
         if intent.action == "out_of_scope":
             print(
-                "这个 demo 不做预订、支付或改签。可以调整天数、日期、城市、预算、"
-                "服务范围，或者让我把某一天写得更详细。"
+                "This demo does not book, pay, or rebook. You can change the "
+                "length, dates, city, budget, or scope, or ask for a day in "
+                "more detail."
             )
             continue
 
+        # Follow-up changes are transactional: until a replacement plan is
+        # ready, keep the previous request, evidence and plan as one snapshot.
+        previous_state = (request, trip_request, search_plan, tool_results, result)
+        turn_error = None
+        failed_state = None
         try:
             if intent.action == "ask_about_plan":
                 print(
@@ -995,17 +1011,17 @@ async def main() -> int:
                     trip_request,
                     search_plan,
                     tool_results,
-                    f"{request}\n\n用户对表达方式的追加要求：{answer}",
+                    f"{request}\n\nAdditional presentation request from the user: {answer}",
                 )
                 if not isinstance(result, TripPlan):
-                    print("结构化 workflow 返回了非 TripPlan 结果。")
+                    print("The structured workflow returned something other than a TripPlan.")
                     return 1
                 show(result)
                 continue
 
             # modify_request: re-extract, then merge with the same
             # stated_fields rule the clarification rounds use.
-            request = f"{request}\n\n用户补充信息：{answer}"
+            request = f"{request}\n\nUser added: {answer}"
             revised = await revise_request(answer)
             rounds = 0
             while revised.status != "ready" and rounds < 2:
@@ -1023,17 +1039,18 @@ async def main() -> int:
                 if not reply:
                     break
                 user_turns.append(reply)
-                request = f"{request}\n\n用户补充信息：{reply}"
+                request = f"{request}\n\nUser added: {reply}"
                 revised = await revise_request(reply)
             if revised.status != "ready":
-                print("信息仍然不完整，本次修改没有生效；原计划保持不变。")
+                request = previous_state[0]
+                print("Still incomplete, so this change was not applied; the plan is unchanged.")
                 continue
 
             next_plan = build_search_plan(revised)
             if next_plan == search_plan:
                 # SearchPlan compares by value: an unchanged query set means
                 # the existing evidence is still exactly right.
-                print("（查询条件未变，复用已有工具结果）")
+                print("(query unchanged; reusing the existing tool results)")
             else:
                 tool_results = execute_search_plan(
                     next_plan,
@@ -1046,7 +1063,7 @@ async def main() -> int:
                 trip_request, search_plan, tool_results, request
             )
             if not isinstance(result, TripPlan):
-                print("结构化 workflow 返回了非 TripPlan 结果。")
+                print("The structured workflow returned something other than a TripPlan.")
                 return 1
             show(result)
             if checkpoint_store is not None:
@@ -1063,25 +1080,42 @@ async def main() -> int:
                 )
         except Exception as error:
             # One failed follow-up must not discard a plan the user already has.
-            print(f"\n这一轮没能完成：{friendly_error(error)}")
+            failed_state = (request, trip_request, search_plan, tool_results)
+            request, trip_request, search_plan, tool_results, result = previous_state
+            turn_error = f"{type(error).__name__}: {error}"
+            print(f"\nThis turn could not be completed: {friendly_error(error)}")
             if args.debug:
                 print(f"[debug] {type(error).__name__}: {error}")
             continue
         finally:
+            # The conversation rolls back, but the failed attempt's evidence
+            # must remain auditable rather than disappearing with that state.
+            log_text, log_request, log_plan, log_results = failed_state or (
+                request, trip_request, search_plan, tool_results
+            )
             write_run_record(
                 args.log_file,
                 run_id=args.run_id,
                 mode=settings.output_mode,
                 model=primary_model,
-                status=(result.status if isinstance(result, TripPlan) else "complete"),
-                request_text=request,
-                request=trip_request,
-                search_plan=search_plan,
-                tool_results=tool_results,
-                final_plan=result if isinstance(result, TripPlan) else None,
-                trajectory=trace.build_trajectory(tool_results),
+                status=(
+                    "error" if turn_error is not None
+                    else result.status if isinstance(result, TripPlan) else "complete"
+                ),
+                error=turn_error,
+                request_text=log_text,
+                request=log_request,
+                search_plan=log_plan,
+                tool_results=log_results,
+                final_plan=result if turn_error is None and isinstance(result, TripPlan) else None,
+                trajectory=trace.build_trajectory(log_results),
                 trace_id=trace.trace_id,
-                metrics=trace.build_metrics(tool_results),
+                metrics=trace.build_metrics(log_results),
+                fallback_used=any(
+                    getattr(item, "used_fallback", False)
+                    for item in (agent, intake_agent, formatter, reviewer, router)
+                    if item is not None
+                ),
                 include_input=args.log_input,
             )
 

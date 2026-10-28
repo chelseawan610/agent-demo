@@ -33,12 +33,12 @@ def get_weather_forecast(
         if first_day < today:
             return ToolResult[list[WeatherDay]].skipped(
                 "Open-Meteo Forecast",
-                "出发日期已经过去，未请求天气预报。",
+                "The departure date is in the past; no forecast was requested.",
             )
         if end_date > last_forecast_day:
             return ToolResult[list[WeatherDay]].skipped(
                 "Open-Meteo Forecast",
-                "出发日期尚未进入 16 天预报窗口，请临近出行时再查询。",
+                "The departure date is outside the 16-day forecast window; check again closer to the trip.",
             )
         payload = HTTP_CLIENT.get_json(
             "https://api.open-meteo.com/v1/forecast",

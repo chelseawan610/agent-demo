@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from travel_agent.schemas.evidence import GeoPoint, PlaceCandidate, ToolResult
-from travel_agent.schemas.request import TripRequest
+from travel_agent.schemas.request import PreferenceSpec, TripRequest
 from travel_agent.tools import places, routing
 from travel_agent.tools.activities import assign_activities
 from travel_agent.workflows.search import build_search_plan, execute_search_plan
@@ -42,7 +42,7 @@ def test_harbour_identity_rejects_nearer_business_and_housing(monkeypatch):
         place_name="Victoria Harbour", place_type="waterfront",
     )
     assert result.status == "ok"
-    assert result.data.provider_id == "W:4"
+    assert result.data.provider_id == "way:4"
     assert result.data.category == "strait"
     assert result.data.venue_type == "outdoor"
     assert result.data.route_eligible is False
@@ -84,6 +84,121 @@ def test_canonical_retry_is_bounded_and_does_not_truncate_name(monkeypatch):
     result = places.resolve_preference_place("艺术宫", "Palace of Fine Arts San Francisco", place_name="Palace of Fine Arts", place_type="landmark")
     assert result.status == "ok"
     assert [params["q"] for _, params in client.calls] == ["Palace of Fine Arts San Francisco", "Palace of Fine Arts"]
+
+
+def test_provider_official_short_name_can_match_canonical_landmark(monkeypatch):
+    monkeypatch.setattr(
+        places,
+        "HTTP_CLIENT",
+        PhotonClient(
+            {
+                "features": [
+                    feature(
+                        "Petronas Towers",
+                        "tourism",
+                        "attraction",
+                        longitude=101.7112,
+                        latitude=3.1580,
+                    )
+                ]
+            }
+        ),
+    )
+
+    result = places.resolve_preference_place(
+        "双子塔",
+        "Petronas Twin Towers Kuala Lumpur",
+        GeoPoint(latitude=3.1412, longitude=101.6865),
+        place_name="Petronas Twin Towers",
+        place_type="landmark",
+    )
+
+    assert result.status == "ok"
+    assert result.data is not None
+    assert result.data.description == "Petronas Towers"
+
+
+def test_provider_name_with_extra_viewpoint_words_is_not_the_landmark(monkeypatch):
+    monkeypatch.setattr(
+        places,
+        "HTTP_CLIENT",
+        PhotonClient(
+            {
+                "features": [
+                    feature(
+                        "Petronas Towers Viewpoint 2",
+                        "tourism",
+                        "viewpoint",
+                        longitude=101.7138,
+                        latitude=3.1562,
+                    )
+                ]
+            }
+        ),
+    )
+
+    result = places.resolve_preference_place(
+        "双子塔",
+        "Petronas Twin Towers Kuala Lumpur",
+        GeoPoint(latitude=3.1412, longitude=101.6865),
+        place_name="Petronas Twin Towers",
+        place_type="landmark",
+    )
+
+    assert result.status == "unavailable"
+    assert result.error_code == "not_relevant"
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "expected_name"),
+    [("National Museum", "National History Museum"), ("Музей города", "Музей истории города")],
+)
+def test_short_name_matching_is_not_specific_to_one_landmark_or_language(
+    monkeypatch, provider_name, expected_name,
+):
+    monkeypatch.setattr(places, "HTTP_CLIENT", PhotonClient({"features": [
+        feature(provider_name, "tourism", "museum"),
+    ]}))
+    result = places.resolve_preference_place(
+        expected_name, expected_name, place_name=expected_name, place_type="museum",
+    )
+    assert result.status == "ok"
+
+
+def test_provider_alias_is_identity_evidence(monkeypatch):
+    candidate = feature("Local Name", "tourism", "museum")
+    candidate["properties"]["alt_name"] = "Historic Name;Requested Museum"
+    monkeypatch.setattr(places, "HTTP_CLIENT", PhotonClient({"features": [candidate]}))
+    result = places.resolve_preference_place(
+        "Requested Museum", "Requested Museum", place_type="museum",
+    )
+    assert result.status == "ok"
+
+
+def test_exact_identity_wins_over_distant_abbreviation(monkeypatch):
+    monkeypatch.setattr(places, "HTTP_CLIENT", PhotonClient({"features": [
+        feature("City Museum", "tourism", "museum", longitude=114.28, identity=1),
+        feature("City History Museum", "tourism", "museum", identity=2),
+    ]}))
+    result = places.resolve_preference_place(
+        "City History Museum", "City History Museum", place_type="museum",
+    )
+    assert result.status == "ok"
+    assert result.data.provider_id == "way:2"
+
+
+def test_photon_and_overpass_identity_deduplicates_before_scheduling(monkeypatch):
+    monkeypatch.setattr(places, "HTTP_CLIENT", PhotonClient({"features": [
+        feature("City Museum", "tourism", "museum", identity=2),
+    ]}))
+    resolved = places.resolve_preference_place("Museum", "City Museum", place_type="museum")
+    overpass = places._place_from_element({
+        "type": "way", "id": 2, "center": {"lat": 22.29, "lon": 114.18},
+        "tags": {"name": "City Museum", "tourism": "museum"},
+    }, "museum")
+    assert resolved.data.provider_id == overpass.provider_id
+    activities = assign_activities("City", 2, [resolved], ToolResult.ok("Overpass", [overpass]))
+    assert len(activities) == 1
 
 
 def test_distant_same_name_candidates_are_reported_as_ambiguous(monkeypatch):
@@ -174,8 +289,8 @@ def test_typed_preferences_survive_execution_and_final_assembly(monkeypatch):
     assert final.itinerary[0].activities[0].route_eligible is False
     assert final.status == "partial"
     assert final.routes == []
-    assert any("室内外搭配尚未满足" in note for note in final.notes)
-    assert "非到访入口" in render_trip_plan(final)
+    assert any("indoor/outdoor mix was not satisfied" in note for note in final.notes)
+    assert "not a verified entrance" in render_trip_plan(final)
 
 
 def test_indoor_only_reports_an_unmet_preference_instead_of_an_empty_plan(monkeypatch):
@@ -222,4 +337,111 @@ def test_indoor_only_reports_an_unmet_preference_instead_of_an_empty_plan(monkey
     )
 
     assert final.status == "partial"
-    assert any("只要室内活动的偏好尚未满足" in note for note in final.notes)
+    assert any("indoor-only preference was not satisfied" in note for note in final.notes)
+
+
+def test_a_place_pinned_to_a_day_lands_on_that_day():
+    # "第3天想去双子塔" used to be flattened to "sometime during the trip":
+    # the day was not representable, so the user could not tell it was lost.
+    details = [
+        PreferenceSpec(
+            label="双子塔",
+            search_query="Petronas",
+            kind="place",
+            place_name="Petronas Twin Towers",
+            preferred_day=3,
+        )
+    ]
+    resolved = [
+        ToolResult.ok(
+            "test",
+            PlaceCandidate(
+                name="Petronas Twin Towers", provider_id="petronas", source="test"
+            ),
+        )
+    ]
+    others = ToolResult.ok(
+        "test",
+        [
+            PlaceCandidate(name=f"Spot{index}", provider_id=f"s{index}", source="test")
+            for index in range(6)
+        ],
+    )
+
+    activities = assign_activities(
+        "Kuala Lumpur", 5, resolved, others, preference_details=details
+    )
+    pinned = [item for item in activities if item.name == "Petronas Twin Towers"]
+
+    assert [item.day for item in pinned] == [3]
+
+
+def test_a_pinned_day_outside_the_trip_is_ignored_rather_than_dropped():
+    details = [
+        PreferenceSpec(
+            label="双子塔",
+            search_query="Petronas",
+            kind="place",
+            place_name="Petronas Twin Towers",
+            preferred_day=9,
+        )
+    ]
+    resolved = [
+        ToolResult.ok(
+            "test",
+            PlaceCandidate(
+                name="Petronas Twin Towers", provider_id="petronas", source="test"
+            ),
+        )
+    ]
+
+    activities = assign_activities(
+        "Kuala Lumpur", 3, resolved, None, preference_details=details
+    )
+
+    assert [item.name for item in activities] == ["Petronas Twin Towers"]
+    assert 1 <= activities[0].day <= 3
+
+
+def test_an_unresolved_named_place_is_reported_as_unmet(monkeypatch):
+    # The summary once claimed a trip was "built around" a landmark that no
+    # provider could verify, and every invariant still passed.
+    import travel_agent.workflows.search as workflow
+
+    request = TripRequest(
+        destination="Kuala Lumpur",
+        days=3,
+        requested_services=["activities", "guide"],
+        preference_details=[
+            {
+                "label": "双子塔",
+                "search_query": "Petronas Twin Towers",
+                "kind": "place",
+                "place_name": "Petronas Twin Towers",
+                "place_type": "landmark",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        workflow,
+        "resolve_destination",
+        lambda _: ToolResult.ok("test", GeoPoint(latitude=3.15, longitude=101.7)),
+    )
+    monkeypatch.setattr(
+        workflow,
+        "resolve_preference_place",
+        lambda *a, **k: ToolResult.unavailable("Photon", "no_match", "未找到可核验的地点"),
+    )
+    monkeypatch.setattr(
+        workflow,
+        "search_attractions",
+        lambda *a, **k: ToolResult.unavailable("Overpass API", "timeout", "timed out"),
+    )
+
+    final = build_deterministic_trip_plan(
+        request, execute_search_plan(build_search_plan(request))
+    )
+
+    assert final.status == "partial"
+    assert any("双子塔" in note and "could not be scheduled" in note for note in final.notes)
+    assert any("No daily itinerary was produced" in note for note in final.notes)

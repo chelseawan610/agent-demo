@@ -4,6 +4,9 @@ from travel_agent.schemas.evidence import ToolResult
 from travel_agent.rag.models import KnowledgeHit
 from travel_agent.memory.store import UserMemory
 from travel_agent.workflows.prompts import build_planner_prompt
+from travel_agent.workflows.prompts import split_preferences_by_outcome
+from travel_agent.schemas.evidence import PlaceCandidate
+from travel_agent.schemas.trip import ActivityOption
 
 
 def test_planner_prompt_contains_one_shared_evidence_packet():
@@ -16,10 +19,10 @@ def test_planner_prompt_contains_one_shared_evidence_packet():
     )
 
     assert "<user_request>" in prompt
-    assert "结构化需求（事实来源）" in prompt
-    assert "搜索计划（程序生成" in prompt
-    assert "工具结果（唯一事实来源）" in prompt
-    assert "不要重新调用工具" in prompt
+    assert "Structured request (the source of truth for the request)" in prompt
+    assert "Search plan (program generated" in prompt
+    assert "Tool results (the only source of travel facts)" in prompt
+    assert "Do not call tools again" in prompt
 
 
 def test_planner_prompt_treats_memory_as_non_authoritative_context():
@@ -37,8 +40,8 @@ def test_planner_prompt_treats_memory_as_non_authoritative_context():
     )
 
     assert "anime" in prompt
-    assert "不是本次明确要求" in prompt
-    assert "结构化需求（事实来源）" in prompt
+    assert "not a requirement for this trip" in prompt
+    assert "Structured request (the source of truth for the request)" in prompt
 
 
 def test_planner_prompt_contains_rag_evidence_boundary():
@@ -66,6 +69,25 @@ def test_planner_prompt_contains_rag_evidence_boundary():
         results,
     )
 
-    assert "本地知识检索" in prompt
+    assert "Local knowledge retrieval" in prompt
     assert "Tokyo Tower is a landmark." in prompt
-    assert "不要把它当成工具返回的实时数据" in prompt
+    assert "Knowledge hits support general advice only, never live data" in prompt
+
+
+def test_resolving_a_place_does_not_prove_it_was_scheduled():
+    request = TripRequest(destination="City", requested_services=["guide"], preference_details=[
+        {"label": "Museum", "kind": "place", "search_query": "Museum", "preferred_day": 2},
+        {"label": "art", "kind": "interest", "search_query": "art"},
+    ])
+    results = SearchResults(preference_places=[
+        ToolResult.ok("Photon", PlaceCandidate(name="Local Museum", provider_id="node:1", source="test")),
+        ToolResult.skipped("Photon", "interest"),
+    ])
+    assert split_preferences_by_outcome(request, results) == ([], ["Museum"])
+    results.activities = [ActivityOption(
+        destination="City", day=1, name="Different provider spelling", provider_id="node:1",
+    )]
+    # Same entity, but not on the requested day.
+    assert split_preferences_by_outcome(request, results) == ([], ["Museum"])
+    results.activities[0].day = 2
+    assert split_preferences_by_outcome(request, results) == (["Museum"], [])

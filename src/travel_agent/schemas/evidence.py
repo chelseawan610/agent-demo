@@ -204,7 +204,7 @@ class SearchLink(BaseModel):
     return_date: date | None = None
     check_in_date: date | None = None
     check_out_date: date | None = None
-    disclaimer: str = "仅生成搜索入口，未自动读取实时价格或库存。"
+    disclaimer: str = "A search link only; no live price or inventory was read."
 
 
 class ToolCallRecord(BaseModel):

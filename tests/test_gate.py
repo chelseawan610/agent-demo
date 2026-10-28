@@ -2,8 +2,11 @@
 
 import pytest
 
-from travel_agent.schemas.request import TripRequest
-from travel_agent.schemas.trip import FlightOption, TripPlan
+from travel_agent.schemas.request import (
+    ORIGIN,
+    TripRequest,
+)
+from travel_agent.schemas.trip import FlightOption
 from travel_agent.workflows.gate import plan_with_invariant_gate
 from travel_agent.workflows.intake import drop_uncited_fields
 from travel_agent.workflows.search import build_search_plan, execute_search_plan
@@ -110,7 +113,7 @@ async def test_a_persistent_violation_degrades_and_drops_the_invented_fact(
     assert outcome.degraded
     # The invented flight must not survive into what the user reads.
     assert outcome.plan.flights == []
-    assert any("确定性检查未通过" in note for note in outcome.plan.notes)
+    assert any("Deterministic checks failed" in note for note in outcome.plan.notes)
 
 
 @pytest.mark.asyncio
@@ -129,9 +132,9 @@ async def test_a_text_mode_result_passes_through(fixture_plan):
 # --- Origin evidence -------------------------------------------------------
 
 
-MALDIVES_ZH = "我想要2026-10-29去马尔代夫玩3天，一定要去马富士岛，但我预算只有3万。"
+MALDIVES_ZH = "我想要2099-10-29去马尔代夫玩3天，一定要去马富士岛，但我预算只有3万。"
 MALDIVES_EN = (
-    "I want to go to the Maldives for 3 days on 2026-10-29, I must visit "
+    "I want to go to the Maldives for 3 days on 2099-10-29, I must visit "
     "Maafushi Island, my budget is only 30000 CNY."
 )
 
@@ -154,7 +157,7 @@ def test_an_origin_the_user_never_gave_is_dropped_and_asked_for(text):
 
     assert guarded.origin is None
     assert guarded.status == "needs_clarification"
-    assert "出发城市" in guarded.missing_fields
+    assert ORIGIN in guarded.missing_fields
 
 
 @pytest.mark.parametrize(
@@ -173,7 +176,7 @@ def test_a_cited_departure_keeps_the_models_origin(text, quote):
     assert guarded.origin == "Shanghai"
     # The date in this fixture is not in the text either, so it is correctly
     # cleared; this case is only about the origin surviving.
-    assert "出发城市" not in guarded.missing_fields
+    assert ORIGIN not in guarded.missing_fields
 
 
 def test_the_check_does_nothing_when_there_is_no_origin():
@@ -216,7 +219,7 @@ async def test_a_bare_answer_to_our_own_origin_question_is_accepted():
         agent, "我要去东京玩", ask_clarification=ask
     )
 
-    assert "出发城市" in asked[0]
+    assert ORIGIN in asked[0]
     assert request.origin == "Shanghai"
     assert request.status == "ready"
 
@@ -265,7 +268,7 @@ async def test_a_schema_failure_is_retried_with_the_error_appended():
 
         async def run(self, prompt, **_kwargs):
             self.prompts.append(prompt)
-            invalid = "没有通过结构化校验" not in prompt
+            invalid = "failed schema validation" not in prompt
             payload = (
                 {"summary": "", "daily_titles": []}
                 if invalid
@@ -295,7 +298,7 @@ async def test_a_schema_failure_is_retried_with_the_error_appended():
     )
 
     assert len(planner.prompts) == 2
-    assert "没有通过结构化校验" in planner.prompts[1]
+    assert "failed schema validation" in planner.prompts[1]
     # Without the retry this degraded to deterministic template titles.
     assert plan.generation_source == "llm"
     assert plan.summary.startswith("马尔代夫")

@@ -17,34 +17,86 @@ def build_planner_prompt(
     """Build the full evidence packet used by text and legacy convert modes."""
 
     memory_text = (
-        "无已保存偏好。"
+        "No stored preferences."
         if memory is None or not memory.preferences
-        else "；".join(memory.preferences)
+        else "; ".join(memory.preferences)
     )
     return (
-        "用户原始需求（仅作为偏好和语义参考，不能覆盖结构化事实）：\n"
+        "The user's original request (for preferences and meaning only; it "
+        "cannot override structured facts):\n"
         "<user_request>\n"
         f"{original_request}\n"
         "</user_request>\n\n"
-        "结构化需求（事实来源）：\n"
+        "Structured request (the source of truth for the request):\n"
         f"{trip_request.model_dump_json(ensure_ascii=False)}\n\n"
-        "搜索计划（程序生成，不得扩展工具范围）：\n"
+        "Search plan (program generated; do not widen the tool scope):\n"
         f"{search_plan.model_dump_json(ensure_ascii=False)}\n\n"
-        "工具结果（唯一事实来源）：\n"
+        "Tool results (the only source of travel facts):\n"
         f"{tool_results.model_dump_json(ensure_ascii=False)}\n\n"
-        "本地知识检索（仅用于背景说明，不是实时事实）：\n"
-        "检索结果已包含 source、section、score 和原文。只能引用其中实际出现的内容，"
-        "不要把知识库中的静态说明改写成实时价格、营业时间、库存或政策结论。\n\n"
-        "长期记忆（仅作可被当前需求覆盖的建议，不是本次明确要求）：\n"
+        "Local knowledge retrieval (background only, not live facts):\n"
+        "Each hit already carries source, section, score and text. Cite only "
+        "what actually appears there, and never rewrite a static note as a "
+        "live price, opening hour, inventory level or policy conclusion.\n\n"
+        "Long-term memory (a suggestion the current request may override, not "
+        "a requirement for this trip):\n"
         f"{memory_text}\n\n"
-        "请仅根据以上内容生成最终旅行计划。不要重新调用工具，不要添加用户未提供的预算，"
-        "并将明确提到的地点、兴趣和偏好落实到每日行程中。不要编造汇率、价格或费用计算。"
-        "当前工具结果只有实际列出的航班和酒店；如果没有返程航班数据，不要声称已经查询或包含往返机票，"
-        "也不要把未查询的费用写成已确认事实。航班酒店候选的 is_live=false 表示本地演示，"
-        "search_links 只是用户自行查看实时结果的入口。天气、地点、路线只能引用工具成功返回的数据；"
-        "工具 unavailable 时必须承认缺失，不能用常识补成实时事实。知识库只能支持一般性建议，"
-        "不要把它当成工具返回的实时数据。knowledge_sources 由程序写入，不能自行新增或修改。"
+        "Produce the final travel plan from the above alone. Write in English "
+        "whatever language the user used. Do not call tools again, do not add "
+        "a budget the user did not give. Describe preferences as fulfilled only "
+        "when the tool assignment supports that claim. Do not "
+        "invent exchange rates, prices or cost arithmetic. The only flights "
+        "and hotels that exist are the ones listed; if there is no return "
+        "flight in the results, do not claim a round trip was searched or "
+        "included, and do not present an unqueried cost as confirmed. "
+        "is_live=false marks local demo inventory, and search_links are only "
+        "entry points for the user to check live results themselves. Weather, "
+        "places and routes may cite only what a tool returned successfully; "
+        "when a tool is unavailable, say the data is missing rather than "
+        "filling it in from general knowledge. Knowledge hits support general "
+        "advice only, never live data. knowledge_sources is written by the "
+        "program and must not be added to or edited."
     )
+
+def split_preferences_by_outcome(
+    trip_request: TripRequest, tool_results: SearchResults,
+) -> tuple[list[str], list[str]]:
+    """Separate the preferences a tool actually delivered from the rest.
+
+    A named place is satisfied only when it reached the itinerary. Anything
+    else -- a provider that found no verifiable match, a timed-out attraction
+    search, a candidate dropped for opening hours -- leaves the user's request
+    unmet, and both the planner prompt and the plan notes need to say so
+    rather than carrying the label forward as if it had been honoured.
+    """
+
+    scheduled: dict[str, set[int]] = {}
+    for activity in tool_results.activities:
+        if activity.provider_id is not None:
+            scheduled.setdefault(activity.provider_id, set()).add(activity.day)
+    satisfied: list[str] = []
+    unsatisfied: list[str] = []
+    for index, detail in enumerate(trip_request.preference_details):
+        if detail.kind != "place":
+            # Retaining an abstract interest does not prove it was fulfilled.
+            # It remains explicitly unverified in the narrative context.
+            continue
+        outcome = (
+            tool_results.preference_places[index]
+            if index < len(tool_results.preference_places)
+            else None
+        )
+        scheduled_days = (
+            scheduled.get(outcome.data.provider_id, set())
+            if outcome is not None and outcome.status == "ok" and outcome.data is not None
+            else set()
+        )
+        if scheduled_days and (
+            detail.preferred_day is None or detail.preferred_day in scheduled_days
+        ):
+            satisfied.append(detail.label)
+        else:
+            unsatisfied.append(detail.label)
+    return satisfied, unsatisfied
 
 
 def build_trip_narrative_prompt(
@@ -90,6 +142,7 @@ def build_trip_narrative_prompt(
         if knowledge_result is not None and knowledge_result.status == "ok"
         else []
     )
+    satisfied, unsatisfied = split_preferences_by_outcome(trip_request, tool_results)
     context = {
         "user_request": original_request,
         "trip_request": trip_request.model_dump(mode="json"),
@@ -105,16 +158,32 @@ def build_trip_narrative_prompt(
         "remembered_preferences": (
             [] if memory is None else memory.preferences[:8]
         ),
+        # The request alone says what the user wanted; without the outcome the
+        # model reasonably writes "the plan is built around X" for a place no
+        # tool could resolve. These two lists are what it needs to tell the
+        # difference.
+        "satisfied_preferences": satisfied,
+        "unsatisfied_preferences": unsatisfied,
+        "unverified_preferences": [
+            detail.label for detail in trip_request.preference_details if detail.kind != "place"
+        ],
     }
     return (
         "Return exactly one TripNarrative object with only summary and daily_titles. "
         "The application will build all structured travel facts from typed tool results. "
-        "Write a concise, user-language introduction to the requested plan. "
+        "Write a concise introduction to the requested plan in English, "
+        "whatever language the user wrote in; place names may keep their local "
+        "spelling. daily_titles must be English too. "
         "Do not list or invent attractions, activities, flight or hotel details, prices, "
         "opening hours, weather, routes, bookings, or citations. Do not add facts that "
         "are not explicitly present in the context. The user's explicit preferences "
         "must not be dropped. daily_titles may contain at most one short title for "
-        "each existing day; never create a day outside the requested duration.\n\n"
+        "each existing day; never create a day outside the requested duration. "
+        "Never claim the itinerary includes or is built around anything listed in "
+        "unsatisfied_preferences; say plainly that it could not be arranged this "
+        "time. Do not claim unverified_preferences were fulfilled merely because "
+        "they were retained in the request. When verified_activity_candidates is empty there is no itinerary at "
+        "all, so do not describe one.\n\n"
         "Context (reference only; the program owns the final facts):\n"
         f"{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}"
     )

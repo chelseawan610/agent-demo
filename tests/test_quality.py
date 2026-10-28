@@ -120,3 +120,14 @@ def test_workflow_checks_detects_model_invented_itinerary_activity():
         for check in checks
         if check.name == "itinerary_evidence_is_authoritative"
     ).passed
+
+
+def test_transit_only_request_does_not_require_an_excluded_driving_call():
+    request = TripRequest(destination="City", requested_services=["guide"], days=2, transport_modes=["transit"])
+    search_plan = build_search_plan(request)
+    results = SearchResults(route_modes=["transit"], tool_calls=[ToolCallRecord(
+        tool_name="optimize_transit_route", provider="fixture", status="skipped", elapsed_ms=0,
+    ) for _ in range(2)])
+    final = TripPlan(destination="City", days=2, summary="fixture", transport_modes=["transit"], tool_status=results.tool_calls)
+    checks = check_workflow_invariants(request, search_plan, results, final)
+    assert all(check.passed for check in checks)

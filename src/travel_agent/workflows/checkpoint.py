@@ -1,6 +1,5 @@
 """File checkpointing for the local, application-owned workflow."""
 
-import json
 from pathlib import Path
 
 from travel_agent.schemas.checkpoint import WorkflowCheckpoint

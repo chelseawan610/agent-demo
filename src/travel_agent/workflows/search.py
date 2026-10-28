@@ -84,8 +84,8 @@ def build_search_plan(request: TripRequest) -> SearchPlan:
 
     if request.status != "ready":
         raise ValueError(
-            "不能为未完成的 TripRequest 创建 SearchPlan；"
-            f"仍缺少：{', '.join(request.missing_fields) or '未知字段'}"
+            "Cannot build a SearchPlan from an incomplete TripRequest; "
+            f"still missing: {', '.join(request.missing_fields) or 'unknown fields'}"
         )
 
     services = set(request.requested_services)
@@ -419,7 +419,7 @@ def execute_search_plan(
     if destination_point is None:
         if plan.weather_query is not None:
             results.weather = ToolResult.skipped(
-                "Open-Meteo Forecast", "目的地坐标不可用，跳过天气。"
+                "Open-Meteo Forecast", "Destination coordinates unavailable; weather skipped."
             )
             _record_skipped(
                 results,
@@ -430,7 +430,7 @@ def execute_search_plan(
                 trace_id=trace_id,
             )
         results.attractions = ToolResult.skipped(
-            "Overpass API", "目的地坐标不可用，跳过景点搜索。"
+            "Overpass API", "Destination coordinates unavailable; attraction search skipped."
         )
         if plan.attraction_query is not None:
             _record_skipped(
@@ -461,7 +461,7 @@ def execute_search_plan(
             if destination_point is None:
                 outcome = ToolResult[PlaceCandidate].skipped(
                     "Photon",
-                    f"{preference.label} 的目的地坐标不可用，跳过地点解析。",
+                    f"Destination coordinates unavailable for {preference.label}; place lookup skipped.",
                 )
                 results.preference_places.append(outcome)
                 _record_skipped(
@@ -479,7 +479,7 @@ def execute_search_plan(
                 # preferences instead of accepting an unrelated POI match.
                 outcome = ToolResult[PlaceCandidate].skipped(
                     "Photon",
-                    f"{preference.label} 是兴趣偏好，不按单一地点解析。",
+                    f"{preference.label} is an interest, not resolved as a single place.",
                 )
                 results.preference_places.append(outcome)
                 _record_skipped(
@@ -546,7 +546,7 @@ def execute_search_plan(
         )
     elif plan.food_query is not None:
         results.foods = ToolResult.skipped(
-            "Overpass API", "目的地坐标不可用，跳过餐饮搜索。"
+            "Overpass API", "Destination coordinates unavailable; dining search skipped."
         )
         _record_skipped(
             results,
@@ -571,10 +571,15 @@ def execute_search_plan(
             and results.weather.status == "ok"
             and results.weather.data is not None
         ):
-            rain_probability_by_day = [
-                weather_day.precipitation_probability_max
+            rain_by_date = {
+                weather_day.date: weather_day.precipitation_probability_max
                 for weather_day in results.weather.data
-            ]
+            }
+            if plan.activity_query.start_date is not None:
+                rain_probability_by_day = [
+                    rain_by_date.get(plan.activity_query.start_date + timedelta(days=offset))
+                    for offset in range(plan.activity_query.days)
+                ]
         results.activities = assign_activities(
             plan.activity_query.destination,
             plan.activity_query.days,
@@ -665,7 +670,7 @@ def execute_search_plan(
                 for mode in plan.route_modes
             ),
             "no_routes",
-            "部分或全部路线适配器不可用。",
+            "Some or all route adapters were unavailable.",
         )
     else:
         results.routes = ToolResult[list[RouteSummary]].skipped(
@@ -673,7 +678,7 @@ def execute_search_plan(
                 "OpenTripPlanner adapter" if mode == "transit" else "OSRM"
                 for mode in plan.route_modes
             ),
-            "每天少于两个已定位地点，无需计算路线。",
+            "Fewer than two located places per day; no route was needed.",
         )
 
     return results

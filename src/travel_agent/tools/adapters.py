@@ -68,7 +68,7 @@ class UnconfiguredFlightAdapter:
         return ToolResult[list[FlightOption]].unavailable(
             self.provider,
             "not_configured",
-            "付费航班供应商尚未配置 API 凭据。",
+            "The paid flight supplier has no API credentials configured.",
         )
 
 
@@ -82,7 +82,7 @@ class UnconfiguredHotelAdapter:
         return ToolResult[list[HotelOption]].unavailable(
             self.provider,
             "not_configured",
-            "付费酒店供应商尚未配置 API 凭据。",
+            "The paid hotel supplier has no API credentials configured.",
         )
 
 

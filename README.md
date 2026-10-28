@@ -1,5 +1,74 @@
 # Travel Planning Agent
 
+A single-agent travel planner on Microsoft Agent Framework. The model reads
+natural language and writes prose; a Python workflow decides which tools run,
+owns dates and boundaries, degrades on failure, and assembles every travel
+fact from typed tool evidence.
+
+**Input is bilingual (Chinese or English). All output is English.**
+
+## Quickstart
+
+```bash
+cp .env.example .env        # set LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
+uv sync --extra dev
+PYTHONPATH=src uv run python -m travel_agent.app.cli
+```
+
+Then just describe a trip, in either language:
+
+```text
+I want to fly from Shanghai to Kuala Lumpur on 2026-10-30 for 5 days,
+and I want to visit the Petronas Towers on day 3.
+```
+
+## Conversation
+
+The plan is not the end of the run. After it prints, the agent keeps the typed
+`SearchResults` in memory and classifies each follow-up turn, because the
+branches differ in cost by an order of magnitude:
+
+| You say | What happens | External calls |
+| --- | --- | --- |
+| `make it 4 days` | re-plans; executes the new SearchPlan | tools in the new plan |
+| `more detail on day two` | re-runs the planner over existing evidence | none |
+| `why isn't X scheduled?` | answers from the evidence already gathered | none |
+| *(Enter)* | ends the session | none |
+
+An unchanged `SearchPlan` reuses the previous tool results outright.
+
+Scripted runs use `--follow-up` to enter the loop through a pipe, and
+`--no-follow-up` to exit after the first plan. `scripts/demo_multi_turn.py`
+records a whole conversation against the real model.
+
+## What the program will not let the model do
+
+Model-written values are not trusted on sight:
+
+- Origin, dates, budget, and an explicit one-way override must be supported by
+  a quote from the user's own message (direct clarification answers are exempt).
+  A value that cannot be cited is cleared and asked about through
+  the normal `required_missing_fields` flow, so an invented origin, date,
+  budget, or one-way flag cannot silently remove a clarification question.
+- 23 deterministic invariants run after the plan is assembled. A failure
+  regenerates once with the failed check names fed back, then degrades to
+  evidence-only assembly. Failures are reported to the user, not just logged.
+- A schema failure is retried once with the validation error appended; the
+  planner runs at temperature 0, so an identical prompt would simply repeat
+  the identical bad output.
+
+Design notes for each of these are in [docs/](docs/).
+
+The [2026-10-28 code audit](docs/code-audit-20261028.md) records the latest
+fixes, verification commands, and known limits. Intake eval fixtures use 2099
+for explicit dates so a correct past-date guard does not invalidate the test
+as time passes. Yearless-date expectations still use the next occurrence.
+Archived model results predate this fixture revision and are not new scores.
+
+---
+
+以下为中文详细说明。
+
 一个基于 Microsoft Agent Framework（MAF）的单 Agent 旅行规划项目。模型负责理解自然语言和组织表达，Python workflow 负责确定工具调用、日期边界、失败降级和事实约束。
 
 ## Architecture
@@ -454,9 +523,10 @@ PYTHONPATH=src uv run pytest -q -m llm_live
 
 The offline suite covers service routing, one-way/round-trip boundaries, cross-month dates, one-day trips, three-round clarification, typed output, provider errors, partial degradation, food scope, transit-adapter degradation, weather-aware activity assignment, memory contracts, and fact constraints. The live suite covers Tokyo/Seoul/New York geocoding, Tokyo weather, Photon preferences, Overpass attractions, and OSRM routing.
 
-The current local result is `169 passed, 13 deselected`; the explicit public-API
-smoke run is `8 passed`. Public APIs can still be throttled or temporarily
-unavailable, so the default CI-style suite remains offline.
+The current local result is `253 passed, 14 deselected`; the no-key public-API
+smoke run is `7 passed, 2 skipped` when a provider is rate-limited or
+temporarily unavailable. Public APIs have no SLA, so the default CI-style suite
+remains offline.
 
 新增的本地 contract tests 还覆盖：JSON memory 的读写、损坏文件降级、偏好边界、
 checkpoint 往返序列化，以及 reviewer 的 prompt 和 `ReviewResult` 解析。

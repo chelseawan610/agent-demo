@@ -2,10 +2,10 @@
 """Drive the real CLI multi-turn loop with a scripted model.
 
 This exists to verify the conversation plumbing without a model key or
-network: the CLI, intake merging, SearchPlan reuse, follow-up routing, and
+paid API calls: the CLI, intake merging, SearchPlan reuse, follow-up routing, and
 rendering are all the real implementations. Only the model responses are
-canned, so what this proves is that every branch is wired correctly --- not
-that a real model classifies a turn the way the script assumes.
+canned; the public travel tools still make free network calls. This verifies
+the conversation wiring, not the real model's interpretation of each turn.
 
     PYTHONPATH=src .venv/bin/python scripts/replay_multi_turn.py
 """
@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 import sys
+from datetime import date, timedelta
 
 from travel_agent.app import cli
 from travel_agent.schemas.followup import FollowUpIntent
@@ -25,8 +26,9 @@ from travel_agent.schemas.request import TripRequest
 import os
 
 _EN = os.getenv("REPLAY_LANG", "zh") == "en"
+DEMO_DATE = (date.today() + timedelta(days=7)).isoformat()
 USER_TURNS = [
-    "I want to go to the Maldives for 3 days on 2026-10-29, I must visit "
+    f"I want to go to the Maldives for 3 days on {DEMO_DATE}, I must visit "
     "Maafushi Island, my budget is only 30000 CNY. Plan the whole trip.",
     "from Shanghai",
     "make it 4 days",
@@ -34,7 +36,7 @@ USER_TURNS = [
     "why is Maafushi Island not scheduled?",
     "",
 ] if _EN else [
-    "我想要2026-10-29去马尔代夫玩3天，一定要去马富士岛，但我预算只有3万你帮我规划整个行程。",
+    f"我想要{DEMO_DATE}去马尔代夫玩3天，一定要去马富士岛，但我预算只有3万你帮我规划整个行程。",
     "从上海出发",          # answers the clarification question
     "改成4天",
     "第二天写详细一点",
@@ -61,36 +63,39 @@ INTAKE_SCRIPT = [
         origin=os.getenv("REPLAY_FAKE_ORIGIN") or None,
         flight_type=os.getenv("REPLAY_FAKE_FLIGHT_TYPE") or None,
         destination="Maldives",
-        start_date="2026-10-29",
+        start_date=DEMO_DATE,
         days=3,
         budget=BUDGET,
         preferences=["马富士岛"],
         preference_details=[MAAFUSHI],
         stated_fields=["destination", "start_date", "days", "budget", "preferences"],
+        field_evidence={"start_date": DEMO_DATE, "budget": "30000 CNY" if _EN else "预算只有3万"},
     ),
     # Clarification round: the user supplies the origin only.
     TripRequest(
         requested_services=["flights", "hotels", "activities", "guide"],
         origin="Shanghai",
         destination="Maldives",
-        start_date="2026-10-29",
+        start_date=DEMO_DATE,
         days=3,
         budget=BUDGET,
         preferences=["马富士岛"],
         preference_details=[MAAFUSHI],
         stated_fields=["origin"],
+        field_evidence={"origin": "from Shanghai" if _EN else "从上海出发", "start_date": DEMO_DATE, "budget": "30000 CNY" if _EN else "预算只有3万"},
     ),
     # Follow-up "改成4天": only the trip length is restated.
     TripRequest(
         requested_services=["flights", "hotels", "activities", "guide"],
         origin="Shanghai",
         destination="Maldives",
-        start_date="2026-10-29",
+        start_date=DEMO_DATE,
         days=4,
         budget=BUDGET,
         preferences=["马富士岛"],
         preference_details=[MAAFUSHI],
         stated_fields=["days"],
+        field_evidence={"origin": "from Shanghai" if _EN else "从上海出发", "start_date": DEMO_DATE, "budget": "30000 CNY" if _EN else "预算只有3万"},
     ),
 ]
 

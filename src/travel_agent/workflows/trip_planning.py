@@ -12,6 +12,7 @@ from travel_agent.schemas.narrative import TripNarrative
 from travel_agent.schemas.trip import ActivityItem, DayPlan, TripPlan
 from travel_agent.rag.models import KnowledgeCitation
 from travel_agent.validation import validate_trip_plan
+from travel_agent.workflows.prompts import split_preferences_by_outcome
 
 
 class StructuredOutputError(ValueError):
@@ -199,12 +200,12 @@ def _apply_request_constraints(
     plan.preferences = request_context.preferences
     if not plan.summary.strip():
         duration_text = (
-            f"{plan.days} 日旅行计划"
+            f"{plan.days}-day trip plan"
             if plan.days is not None
-            else "航班候选方案"
+            else "flight candidates"
         )
         plan.summary = (
-            f"已根据确认后的需求整理 {plan.destination} "
+            f"A {plan.destination} "
             f"{duration_text}。"
         )
     # Search tools are the source of truth for factual candidates. The planner
@@ -245,8 +246,8 @@ def _apply_request_constraints(
             and not plan.food
         ):
             note = (
-                "没有找到带有用户餐饮偏好匹配标签的候选；"
-                "未将普通餐饮地点冒充为目标菜系。"
+                "No candidate carried a tag matching the requested cuisine; a generic "
+                "eatery was not presented as that cuisine."
             )
             if note not in plan.notes:
                 plan.notes.append(note)
@@ -357,37 +358,65 @@ def _apply_request_constraints(
         degraded = bool(unavailable) or any(
             record.status == "unavailable" for record in search_results.tool_calls
         )
+        # A place the user named by hand is the one thing they will look for
+        # first. When no provider could verify it, the plan has to say so in
+        # its own words rather than leave the label in `preferences` looking
+        # honoured, which is what let a summary claim a trip was built around
+        # a landmark that never reached the itinerary.
+        _, unsatisfied = split_preferences_by_outcome(request_context, search_results)
+        if unsatisfied:
+            degraded = True
+            plan.notes.append(
+                "These explicitly requested places could not be scheduled: "
+                + ", ".join(unsatisfied)
+                + ". A verified matching stop must reach the itinerary on the "
+                "requested day, when specified. A lookup alone does not prove "
+                "this preference was fulfilled."
+            )
+        # Only when a place search actually ran and produced nothing. An
+        # itinerary that is empty because no search was attempted (a fixture
+        # or a request whose scope excludes activities) is not a failure.
+        attempted_places = (
+            search_results.attractions is not None
+            or bool(search_results.preference_places)
+        )
+        if not plan.itinerary and attempted_places:
+            degraded = True
+            plan.notes.append(
+                "No daily itinerary was produced: the place tools returned no verifiable candidates."
+            )
+
         hints = {detail.planning_hint for detail in request_context.preference_details}
         known_types = {item.venue_type for item in search_results.activities}
         if "venue_mix" in hints and not {"indoor", "outdoor"} <= known_types:
             degraded = True
             plan.notes.append(
-                "室内外搭配尚未满足：当前工具未提供足够的、类型已核验的室内和室外候选。"
+                "The indoor/outdoor mix was not satisfied: the tools did not return enough candidates with a verified venue type."
             )
         # A strict indoor/outdoor request filters candidates in
         # ``assign_activities``. Filtering everything out must be reported the
         # same way, otherwise an empty itinerary looks like a complete plan.
         for strict_hint, venue_type, label in (
-            ("indoor_only", "indoor", "室内"),
-            ("outdoor_only", "outdoor", "室外"),
+            ("indoor_only", "indoor", "indoor"),
+            ("outdoor_only", "outdoor", "outdoor"),
         ):
             if strict_hint in hints and venue_type not in known_types:
                 degraded = True
                 plan.notes.append(
-                    f"只要{label}活动的偏好尚未满足：当前工具未返回任何被明确标记为"
-                    f"{label}的候选地点，因此没有安排相应活动。"
+                    f"The {label}-only preference was not satisfied: no candidate was "
+                    f"explicitly tagged {label}, so nothing was scheduled."
                 )
         for result in unavailable:
-            note = f"{result.provider} 暂时不可用：{result.message or result.error_code}"
+            note = f"{result.provider} is unavailable: {result.message or result.error_code}"
             if note not in plan.notes:
                 plan.notes.append(note)
         for record in search_results.tool_calls:
             if record.status == "unavailable":
-                note = f"{record.provider} 的 {record.tool_name} 暂时不可用，未返回候选数据。"
+                note = f"{record.tool_name} on {record.provider} is unavailable; no candidates returned."
                 if note not in plan.notes:
                     plan.notes.append(note)
         if search_results.weather is not None and search_results.weather.status == "skipped":
-            note = search_results.weather.message or "天气查询已跳过。"
+            note = search_results.weather.message or "The weather lookup was skipped."
             if note not in plan.notes:
                 plan.notes.append(note)
     if request_context.status == "ready":
@@ -424,24 +453,24 @@ def build_deterministic_trip_plan(
         "food",
     }:
         days = 1
-    destination = request_context.destination or "未指定目的地"
+    destination = request_context.destination or "an unspecified destination"
     duration_text = (
-        f"{days} 日旅行计划" if days is not None else "纯航班候选"
+        f"{days}-day trip plan" if days is not None else "flight candidates"
     )
     source = generation_source or (
         "offline" if offline else "deterministic_fallback"
     )
     if source == "offline":
         summary = (
-            f"离线模式：根据已结构化的 {destination} {duration_text}需求，"
-            "整理免费工具返回的旅行数据。未调用语言模型。"
+            f"Offline mode: a {duration_text} for {destination}, assembled from the "
+            "free tool results for the already structured request. No model was called."
         )
-        notes = ["离线模式未调用 LLM；每日标题和说明使用确定性模板。"]
+        notes = ["Offline mode called no model; day titles use deterministic templates."]
     elif source == "deterministic_fallback":
-        summary = f"已根据确认后的需求整理 {destination} {duration_text}。"
-        notes = ["语言模型结构化输出未通过校验；已使用确定性事实计划。"]
+        summary = f"A {duration_text} for {destination}, based on the confirmed request."
+        notes = ["Model structured output failed validation; a deterministic factual plan was used."]
     else:
-        summary = f"已根据确认后的需求整理 {destination} {duration_text}。"
+        summary = f"A {duration_text} for {destination}, based on the confirmed request."
         notes = []
     draft = TripPlan(
         generation_source=source,
@@ -505,10 +534,10 @@ def with_validation_feedback(prompt: str, detail: str) -> str:
 
     return (
         f"{prompt}\n\n"
-        "上一次输出没有通过结构化校验：\n"
+        "The previous output failed schema validation:\n"
         f"{detail}\n"
-        "请只修正这个问题，重新输出一个符合 schema 的 JSON 对象；"
-        "不要改变任何工具提供的事实。"
+        "Fix only that problem and return a valid JSON object for the schema. "
+        "Do not change any fact that came from a tool."
     )
 
 
@@ -581,10 +610,10 @@ async def plan_trip_structured(
             fallback.notes = [
                 note
                 for note in fallback.notes
-                if not note.startswith("语言模型结构化输出未通过校验")
+                if not note.startswith("Model structured output failed validation")
             ]
         else:
-            fallback.notes.append("详细结构化校验错误已写入运行日志。")
+            fallback.notes.append("The detailed validation errors are in the run log.")
         # A request that only asked for flights is incomplete when its sole
         # required provider returned no candidates. Skipped optional sources
         # do not make an otherwise usable plan partial.
@@ -645,7 +674,7 @@ async def plan_trip_structured(
         if fallback is not None:
             return fallback
         raise StructuredOutputError(
-            "结构化输出失败：缺少 typed request/search context，无法组装事实计划。"
+            "Structured output failed: without typed request/search context no factual plan can be assembled."
         ) from (last_error or None)
 
     def parse_response(response: Any, stage_name: str) -> TripPlan | None:
@@ -839,7 +868,7 @@ async def plan_trip_structured(
         return fallback
 
     details = " | ".join(validation_errors[-3:])
-    message = "结构化输出失败：模型未返回可校验的 TripPlan。"
+    message = "Structured output failed: the model returned no valid TripPlan."
     if details:
-        message += f" 详情：{details}"
+        message += f" Details: {details}"
     raise StructuredOutputError(message) from (first_error or last_error)

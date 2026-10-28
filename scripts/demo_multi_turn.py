@@ -24,10 +24,12 @@ import argparse
 import os
 import subprocess
 import sys
+from datetime import date, timedelta
 
 
+DEMO_DATE = (date.today() + timedelta(days=7)).isoformat()
 DEFAULT_TURNS = [
-    "我想要2026-10-29去马尔代夫玩3天，一定要去马富士岛，但我预算只有3万你帮我规划整个行程。",
+    f"我想要{DEMO_DATE}去马尔代夫玩3天，一定要去马富士岛，但我预算只有3万你帮我规划整个行程。",
     "从上海出发",
     "改成4天",
     "第二天写详细一点",
@@ -36,7 +38,7 @@ DEFAULT_TURNS = [
 ]
 
 ENGLISH_TURNS = [
-    "I want to go to the Maldives for 3 days on 2026-10-29, I must visit "
+    f"I want to go to the Maldives for 3 days on {DEMO_DATE}, I must visit "
     "Maafushi Island, my budget is only 30000 CNY. Plan the whole trip.",
     "from Shanghai",
     "make it 4 days",
@@ -99,7 +101,7 @@ def run(turns: list[str], out_path: str, timeout: float, extra: list[str]) -> in
     if errors.strip():
         print("STDERR:", errors, file=sys.stderr)
     print(f"\n[transcript saved to {out_path}; exit={code}]")
-    return 0
+    return code if code >= 0 else 1
 
 
 def main() -> int:
@@ -108,6 +110,10 @@ def main() -> int:
     )
     parser.add_argument("--out", default=".local/transcript-real.txt")
     parser.add_argument("--turn", action="append", dest="turns")
+    parser.add_argument(
+        "--turns-file",
+        help="Read one turn per line from this file (keeps non-ASCII out of the shell)",
+    )
     parser.add_argument("--english", action="store_true", help="Use the English script")
     parser.add_argument("--timeout", type=float, default=900.0)
     parser.add_argument(
@@ -119,7 +125,13 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    turns = args.turns or (ENGLISH_TURNS if args.english else DEFAULT_TURNS)
+    if args.turns_file:
+        with open(args.turns_file, encoding="utf-8") as stream:
+            turns = [line.rstrip("\n") for line in stream]
+        while turns and turns[-1] == "":
+            turns.pop()
+    else:
+        turns = args.turns or (ENGLISH_TURNS if args.english else DEFAULT_TURNS)
     if turns and turns[-1] != "":
         turns = [*turns, ""]
     return run(turns, args.out, args.timeout, args.extra)

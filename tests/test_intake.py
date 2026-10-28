@@ -2,7 +2,15 @@ from datetime import date, timedelta
 
 import pytest
 
-from travel_agent.schemas.request import BudgetSpec, TripRequest, parse_calendar_date
+from travel_agent.schemas.request import (
+    DEPARTURE_DATE,
+    ORIGIN,
+    TRIP_LENGTH_OR_NIGHTS,
+    TRIP_LENGTH_OR_RETURN,
+    BudgetSpec,
+    TripRequest,
+    parse_calendar_date,
+)
 from travel_agent.workflows.intake import (
     collect_trip_request,
     drop_uncited_fields,
@@ -15,7 +23,7 @@ def test_trip_request_is_not_ready_without_date_or_duration():
     request = TripRequest(origin="上海", destination="首尔", intent="full_plan")
 
     assert request.status == "needs_clarification"
-    assert "出发日期" in request.missing_fields
+    assert DEPARTURE_DATE in request.missing_fields
 
 
 def test_guide_only_needs_destination():
@@ -30,8 +38,8 @@ def test_default_trip_request_is_full_plan():
 
     assert request.requested_services == ["flights", "hotels", "activities", "guide"]
     assert request.status == "needs_clarification"
-    assert "出发城市" in request.missing_fields
-    assert "出发日期" in request.missing_fields
+    assert ORIGIN in request.missing_fields
+    assert DEPARTURE_DATE in request.missing_fields
 
 
 def test_trip_request_is_ready_with_required_fields():
@@ -78,7 +86,7 @@ def test_past_model_date_returns_to_clarification_before_tools():
 
     assert request.start_date is None
     assert request.status == "needs_clarification"
-    assert "出发日期（不能早于今天）" in request.missing_fields
+    assert f"{DEPARTURE_DATE} (cannot be in the past)" in request.missing_fields
 
 
 def test_budget_is_normalized_without_inventing_a_default():
@@ -231,7 +239,7 @@ def test_duration_profile_cannot_replace_a_missing_full_plan_boundary():
     assert request.status == "needs_clarification"
     assert request.days is None
     assert request.nights is None
-    assert "游玩天数或回程/退房日期" in request.missing_fields
+    assert TRIP_LENGTH_OR_RETURN in request.missing_fields
 
 
 def test_model_recommended_days_are_authoritative_over_profile_mapping():
@@ -292,7 +300,7 @@ def test_full_plan_requires_a_duration_boundary_before_tools():
     )
 
     assert request.status == "needs_clarification"
-    assert request.missing_fields == ["游玩天数或回程/退房日期"]
+    assert request.missing_fields == [TRIP_LENGTH_OR_RETURN]
 
 
 def test_one_way_flight_request_does_not_need_return_boundary():
@@ -353,7 +361,7 @@ def test_service_specific_duration_questions_are_combined_for_hotel_and_guide():
         start_date="2099-10-20",
     )
 
-    assert request.missing_fields == ["游玩天数或入住晚数/退房日期"]
+    assert request.missing_fields == [TRIP_LENGTH_OR_NIGHTS]
 
 
 def test_return_date_derives_duration_before_search():
@@ -426,9 +434,9 @@ async def test_three_step_clarification_keeps_previous_answers():
     request, _ = await collect_trip_request(agent, "我要去东京玩", ask_clarification=ask)
 
     assert asked == [
-        ["出发城市", "出发日期", "游玩天数或回程/退房日期"],
-        ["出发日期", "游玩天数或回程/退房日期"],
-        ["游玩天数或回程/退房日期"],
+        [ORIGIN, DEPARTURE_DATE, TRIP_LENGTH_OR_RETURN],
+        [DEPARTURE_DATE, TRIP_LENGTH_OR_RETURN],
+        [TRIP_LENGTH_OR_RETURN],
     ]
     assert request.status == "ready"
     assert request.origin == "Shanghai"
@@ -487,9 +495,9 @@ async def test_clarification_stops_after_three_answers():
     assert calls == 3
     assert request.status == "needs_clarification"
     assert request.missing_fields == [
-        "出发城市",
-        "出发日期",
-        "游玩天数或回程/退房日期",
+        ORIGIN,
+        DEPARTURE_DATE,
+        TRIP_LENGTH_OR_RETURN,
     ]
 
 
@@ -528,7 +536,7 @@ async def test_missing_date_is_asked_again_until_answered():
         ask_clarification=ask,
     )
 
-    assert asked == [["出发日期"], ["出发日期"]]
+    assert asked == [[DEPARTURE_DATE], [DEPARTURE_DATE]]
     assert request.status == "ready"
     assert request.start_date.isoformat() == "2099-10-01"
 

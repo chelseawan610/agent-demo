@@ -137,7 +137,7 @@ def build_plan_question_prompt(
         f"工具返回的全部候选地点：{json.dumps(unscheduled, ensure_ascii=False)}\n"
         f"工具状态：{json.dumps(tool_status, ensure_ascii=False)}\n"
         f"计划备注：{json.dumps(plan.notes, ensure_ascii=False)}\n\n"
-        "要求：用中文回答，三句话以内。只能引用上面出现过的事实；"
+        "要求：用英文回答，三句话以内。只能引用上面出现过的事实；"
         "上面没有的信息就直接说明没有查到，不要补充常识或猜测。"
         "如果某个地点因为营业时间、天气排序或候选不足而没有排进行程，请说明原因。"
     )
@@ -165,5 +165,5 @@ async def answer_plan_question(
             on_trace=on_trace,
         )
     except Exception as error:
-        return f"无法回答这个问题（{type(error).__name__}）。计划本身没有改变。"
-    return (getattr(response, "text", "") or "").strip() or "没有可引用的信息。"
+        return f"Could not answer this question ({type(error).__name__}). The plan is unchanged."
+    return (getattr(response, "text", "") or "").strip() or "No evidence is available to answer this."

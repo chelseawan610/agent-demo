@@ -130,7 +130,7 @@ def test_failure_summary_names_the_failing_stage():
 
 
 def test_failure_summary_is_explicit_when_nothing_failed():
-    assert "无" in render_failure_summary(SearchResults())
+    assert "none" in render_failure_summary(SearchResults())
 
 
 # --- User-facing wording ---------------------------------------------------
@@ -141,12 +141,12 @@ def test_clarification_asks_a_question_not_a_field_name():
 
     question = build_clarification_question(request)
 
-    assert "？" in question
+    assert "?" in question
     assert "missing_fields" not in question
 
 
 def test_friendly_error_explains_a_timeout_without_a_stack_trace():
     message = friendly_error(TimeoutError("read timed out"))
 
-    assert "超时" in message
+    assert "timed out" in message
     assert "Traceback" not in message

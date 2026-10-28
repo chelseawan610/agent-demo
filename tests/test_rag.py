@@ -1,6 +1,6 @@
 from travel_agent.rag.models import KnowledgeHit
 from travel_agent.rag.retriever import MarkdownKnowledgeBase, tokenize
-from travel_agent.rag.vector import HybridKnowledgeBase, create_knowledge_retriever
+from travel_agent.rag.vector import ChromaKnowledgeBase, HybridKnowledgeBase, create_knowledge_retriever
 from travel_agent.schemas.request import TripRequest
 from travel_agent.schemas.search import SearchPlan
 from travel_agent.workflows.search import build_search_plan, execute_search_plan
@@ -46,6 +46,50 @@ def test_markdown_retriever_scope_excludes_other_destination_sections(tmp_path):
     assert hits
     assert all(hit.section != "Tokyo" for hit in hits)
     assert any(hit.section == "Seoul" for hit in hits)
+
+
+def test_bm25_scope_does_not_make_common_term_scores_negative(tmp_path):
+    (tmp_path / "guide.md").write_text(
+        "# Guide\n\n" + "\n\n".join(f"## {city}\n\nTravel advice for {city}." for city in ("Tokyo", "Seoul", "Paris", "Rome")),
+        encoding="utf-8",
+    )
+    hits = MarkdownKnowledgeBase(tmp_path).search("travel", scope="Tokyo")
+    assert len(hits) == 1
+    assert hits[0].score > 0
+
+
+def test_retrievers_respect_the_character_budget_even_for_the_first_hit(tmp_path):
+    (tmp_path / "guide.md").write_text("# Guide\n\nTravel advice is too long.", encoding="utf-8")
+    lexical = MarkdownKnowledgeBase(tmp_path)
+    assert lexical.search("travel", max_chars=5) == []
+    assert HybridKnowledgeBase(lexical, lexical).search("travel", max_chars=5) == []
+
+
+def test_vector_search_enforces_top_k_after_scope_filtering_without_loading_models():
+    class Embedder:
+        def encode_query(self, _query):
+            return [0.0]
+
+    class Collection:
+        def count(self):
+            return 4
+
+        def query(self, **_kwargs):
+            return {
+                "ids": [["wrong-city", "first", "second", "third"]],
+                "documents": [["Seoul", "Tokyo one", "Tokyo two", "Tokyo three"]],
+                "metadatas": [[{"section": city} for city in ("Seoul", "Tokyo", "Tokyo", "Tokyo")]],
+                "distances": [[0.1, 0.2, 0.3, 0.4]],
+            }
+
+    knowledge = object.__new__(ChromaKnowledgeBase)
+    knowledge._chunks = [object()] * 4
+    knowledge._embedder = Embedder()
+    knowledge._collection = Collection()
+    hits = knowledge.search("Tokyo", scope="Tokyo", top_k=1)
+    assert [hit.chunk_id for hit in hits] == ["first"]
+    assert knowledge.search("Tokyo", top_k=0) == []
+    assert knowledge.search("Tokyo", top_k=1, max_chars=2) == []
 
 
 def test_search_plan_builds_rag_query_from_destination_and_preferences():

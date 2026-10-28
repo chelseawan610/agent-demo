@@ -22,7 +22,7 @@ def resolve_destination(destination: str) -> ToolResult[GeoPoint]:
             return ToolResult[GeoPoint].unavailable(
                 "Open-Meteo Geocoding",
                 "not_found",
-                f"未找到目的地：{destination}",
+                f"Destination not found: {destination}",
                 attribution=OPEN_METEO_ATTRIBUTION,
             )
         result = results[0]

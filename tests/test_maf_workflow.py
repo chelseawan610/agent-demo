@@ -72,4 +72,4 @@ async def test_maf_workflow_keeps_plan_when_reviewer_fails():
     )
 
     assert plan.review is None
-    assert any("质量复核暂不可用" in note for note in plan.notes)
+    assert any("Quality review is unavailable" in note for note in plan.notes)
