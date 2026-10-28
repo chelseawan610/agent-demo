@@ -612,8 +612,9 @@ async def main() -> int:
 
     agent = create_with_optional_fallback(create_travel_agent)
     intake_agent = create_with_optional_fallback(create_intake_agent)
-    # ``auto``/``direct`` use the compact TripNarrative response and do not
-    # need a second formatter model. Keep the formatter only for legacy
+    # ``auto`` uses the compact TripNarrative response and does not need a
+    # second formatter model. ``direct`` intentionally exercises the full
+    # TripPlan structured-output contract. Keep the formatter only for legacy
     # ``convert`` mode, where it is still the requested two-stage workflow.
     formatter = (
         create_with_optional_fallback(create_trip_formatter)
@@ -764,7 +765,7 @@ async def main() -> int:
 
             prompt_builder = (
                 build_trip_narrative_prompt
-                if settings.output_mode in {"auto", "direct"}
+                if settings.output_mode == "auto"
                 else build_planner_prompt
             )
             planner_request = prompt_builder(

@@ -523,7 +523,7 @@ PYTHONPATH=src uv run pytest -q -m llm_live
 
 The offline suite covers service routing, one-way/round-trip boundaries, cross-month dates, one-day trips, three-round clarification, typed output, provider errors, partial degradation, food scope, transit-adapter degradation, weather-aware activity assignment, memory contracts, and fact constraints. The live suite covers Tokyo/Seoul/New York geocoding, Tokyo weather, Photon preferences, Overpass attractions, and OSRM routing.
 
-The current local result is `253 passed, 14 deselected`; the no-key public-API
+The current local result is `254 passed, 14 deselected`; the no-key public-API
 smoke run is `7 passed, 2 skipped` when a provider is rate-limited or
 temporarily unavailable. Public APIs have no SLA, so the default CI-style suite
 remains offline.

@@ -58,6 +58,10 @@ comparing the user's words again.
   its error and attempted evidence, so recovery and audit do not conflict.
 * Route invariants now use the activity horizon and do not demand a driving
   call when the user explicitly requested transit only.
+* `auto` uses the compact narrative contract, while `direct` now genuinely
+  exercises the full `TripPlan` structured-output contract. If the invariant
+  gate still fails after its one feedback regeneration, it always returns the
+  typed evidence fallback instead of handing back an already-invalid model plan.
 * Evaluation fixtures use far-future explicit dates so a correct “past date”
   guard does not turn the test suite stale. This changes fixtures, not the
   runtime date policy.
@@ -67,7 +71,7 @@ comparing the user's words again.
 No paid model call was made for this audit.
 
 ```text
-uv run pytest -q                         253 passed, 14 deselected
+uv run pytest -q                         254 passed, 14 deselected
 PYTHONPATH=src uv run python -m evals.evaluate_workflow
                                           10 / 10 passed
 uv run pytest -q -m live                  7 passed, 2 skipped

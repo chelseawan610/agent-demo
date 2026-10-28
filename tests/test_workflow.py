@@ -127,6 +127,36 @@ async def test_typed_auto_uses_small_narrative_and_keeps_tool_facts():
 
 
 @pytest.mark.asyncio
+async def test_typed_direct_uses_full_trip_plan_contract():
+    request = TripRequest(
+        status="ready",
+        requested_services=["activities", "guide"],
+        destination="Tokyo",
+        days=1,
+    )
+    planner = FakeAgent(
+        [
+            FakeResponse(
+                '{"status":"complete","destination":"Tokyo","days":1,'
+                '"summary":"A direct plan","flights":[],"hotels":[],'
+                '"itinerary":[],"notes":[]}'
+            )
+        ]
+    )
+
+    result = await plan_trip_structured(
+        planner,
+        "full TripPlan prompt",
+        mode="direct",
+        request_context=request,
+        search_results=SearchResults(),
+    )
+
+    assert planner.calls == 1
+    assert result.summary == "A direct plan"
+
+
+@pytest.mark.asyncio
 async def test_typed_auto_marks_deterministic_fallback_without_formatter_call():
     request = TripRequest(
         status="ready",

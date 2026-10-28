@@ -626,7 +626,7 @@ async def plan_trip_structured(
     # This is the normal CLI path. The model is not asked to reproduce the
     # large evidence object, so truncation or a provider-specific full-schema
     # limitation cannot erase successful tool results.
-    if mode in {"direct", "auto"} and request_context is not None and search_results is not None:
+    if mode == "auto" and request_context is not None and search_results is not None:
         attempt_prompt = request
         for attempt in range(1, NARRATIVE_ATTEMPTS + 1):
             try:

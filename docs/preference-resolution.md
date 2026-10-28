@@ -95,7 +95,7 @@ typed request 到最终计划的传递，以及公共 API 超时后的偏好保�
 已核验活动。系统没有声称室内外搭配已完成，也没有编造路线。该案例关闭了 RAG，专门
 核对本次修改涉及的模型到工具链路。
 
-本轮实际验证：离线测试 `253 passed, 14 deselected`；固定证据的 workflow 回归
+本轮实际验证：离线测试 `254 passed, 14 deselected`；固定证据的 workflow 回归
 `10/10`；真实 Photon 测试（Tokyo Tower、Victoria Harbour）`2 passed`。
 另用真实 Intake 模型解析英文 Vienna/Danube 请求，得到 activities+guide、2 天、
 waterfront 地点和 venue_mix 约束，日志保存在 `.local/preference-intake-20261023.jsonl`。

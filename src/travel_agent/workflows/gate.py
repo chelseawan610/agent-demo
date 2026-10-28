@@ -77,7 +77,6 @@ async def plan_with_invariant_gate(
     A non-``TripPlan`` result (``--mode text``) is passed through untouched.
     """
 
-    last_plan: TripPlan | None = None
     last_failures: list[WorkflowCheck] = []
     used = 0
 
@@ -90,7 +89,7 @@ async def plan_with_invariant_gate(
         failures = failed_checks(request, search_plan, search_results, plan)
         if not failures:
             return GateOutcome(plan, attempt, attempt > 1, False, ())
-        last_plan, last_failures = plan, failures
+        last_failures = failures
         feedback = describe_failures(failures)
 
     fallback = build_deterministic_trip_plan(
@@ -100,11 +99,17 @@ async def plan_with_invariant_gate(
         generation_source="deterministic_fallback",
     )
     remaining = failed_checks(request, search_plan, search_results, fallback)
-    if remaining and last_plan is not None and len(remaining) >= len(last_failures):
-        # Degrading made nothing better; keep the model plan and report the
-        # violations rather than silently swapping in a worse one.
-        _note(last_plan, last_failures, degraded=False)
-        return GateOutcome(last_plan, used, used > 1, False, tuple(last_failures))
+    if remaining:
+        # A model plan that already violated an invariant is never safer than
+        # a typed evidence plan, even when the fallback has its own provider
+        # limitation. Keep the fallback and report both the original model
+        # violations and any invariant that remains after degradation.
+        combined: list[WorkflowCheck] = []
+        for check in [*last_failures, *remaining]:
+            if check.name not in {item.name for item in combined}:
+                combined.append(check)
+        _note(fallback, combined, degraded=True)
+        return GateOutcome(fallback, used, used > 1, True, tuple(combined))
 
     _note(fallback, last_failures, degraded=True)
     return GateOutcome(fallback, used, used > 1, True, tuple(remaining))
