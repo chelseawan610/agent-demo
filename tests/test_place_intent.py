@@ -260,6 +260,40 @@ def test_island_candidates_are_outdoor_but_not_road_route_stops():
     assert candidate.route_eligible is False
 
 
+def test_photon_place_islet_is_not_a_road_route_stop(monkeypatch):
+    monkeypatch.setattr(
+        places,
+        "HTTP_CLIENT",
+        PhotonClient(
+            {
+                "features": [
+                    {
+                        "properties": {
+                            "name": "Alcatraz Island",
+                            "osm_key": "place",
+                            "osm_value": "islet",
+                            "osm_type": "R",
+                            "osm_id": 42,
+                        },
+                        "geometry": {"coordinates": [-122.4227, 37.8267]},
+                    }
+                ]
+            }
+        ),
+    )
+    result = places.resolve_preference_place(
+        "Alcatraz Island",
+        "Alcatraz Island San Francisco",
+        GeoPoint(latitude=37.77493, longitude=-122.41942),
+        place_name="Alcatraz Island",
+        place_type="landmark",
+    )
+
+    assert result.status == "ok"
+    assert result.data.venue_type == "outdoor"
+    assert result.data.route_eligible is False
+
+
 def test_distant_same_name_candidates_are_reported_as_ambiguous(monkeypatch):
     monkeypatch.setattr(places, "HTTP_CLIENT", PhotonClient({"features": [
         feature("City Museum", "tourism", "museum"),

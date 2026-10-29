@@ -265,6 +265,7 @@ def _route_eligible(properties: dict) -> bool:
     }
     return (
         (key, value) not in blocked_pairs
+        and value not in {"islet", "island"}
         and natural not in {"bay", "strait", "water", "sea", "islet", "island"}
         and waterway not in {"river", "dock"}
     )
@@ -329,7 +330,7 @@ def _venue_type(tags: dict, category: str) -> str:
         "yes", "true", True
     }:
         return "outdoor"
-    if natural in {
+    if osm_value in {"bay", "beach", "cliff", "coastline", "island", "islet", "peak", "river", "strait", "water"} or natural in {
         "bay", "beach", "cliff", "coastline", "island", "islet",
         "peak", "river", "strait", "water",
     }:
