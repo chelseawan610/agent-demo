@@ -254,11 +254,20 @@ def _place_type_score(properties: dict, expected: PlaceType) -> int:
 def _route_eligible(properties: dict) -> bool:
     """A water/area centroid is not a verified road-accessible entrance."""
 
-    return (properties.get("osm_key"), properties.get("osm_value")) not in {
+    key, value = properties.get("osm_key"), properties.get("osm_value")
+    natural = properties.get("natural")
+    waterway = properties.get("waterway")
+    blocked_pairs = {
         ("natural", "bay"), ("natural", "strait"), ("natural", "water"),
-        ("natural", "sea"), ("waterway", "river"), ("waterway", "dock"),
+        ("natural", "sea"), ("natural", "islet"), ("natural", "island"),
+        ("waterway", "river"), ("waterway", "dock"),
         ("boundary", "protected_area"),
     }
+    return (
+        (key, value) not in blocked_pairs
+        and natural not in {"bay", "strait", "water", "sea", "islet", "island"}
+        and waterway not in {"river", "dock"}
+    )
 
 
 def _optional_bool(value: object) -> bool | None:
@@ -313,6 +322,18 @@ def _venue_type(tags: dict, category: str) -> str:
         return "indoor"
     if explicit in {"no", "false"}:
         return "outdoor"
+    osm_key = str(tags.get("osm_key", "")).casefold()
+    osm_value = str(tags.get("osm_value", "")).casefold()
+    natural = str(tags.get("natural", "")).casefold()
+    if (osm_key, osm_value) == ("bridge", "yes") or tags.get("bridge") in {
+        "yes", "true", True
+    }:
+        return "outdoor"
+    if natural in {
+        "bay", "beach", "cliff", "coastline", "island", "islet",
+        "peak", "river", "strait", "water",
+    }:
+        return "outdoor"
     if category in {"museum", "gallery", "aquarium", "planetarium", "cinema", "theatre"}:
         return "indoor"
     if category in {"park", "garden", "beach", "viewpoint", "nature_reserve", "bay", "strait", "water", "river"}:
@@ -346,6 +367,7 @@ def _place_from_element(element: dict, default_category: str) -> PlaceCandidate 
         provider_id=_osm_provider_id(element.get("type", "unknown"), element.get("id")),
         source="Overpass / OpenStreetMap",
         verified=True,
+        route_eligible=_route_eligible(tags),
         description=tags.get("description:en") or tags.get("description", ""),
         opening_hours=tags.get("opening_hours"),
         website=tags.get("website") or tags.get("contact:website"),

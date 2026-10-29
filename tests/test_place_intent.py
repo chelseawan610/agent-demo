@@ -158,6 +158,7 @@ def test_explicit_landmark_type_wins_over_same_name_road_segments(monkeypatch):
 
     assert result.status == "ok"
     assert result.data.provider_id == "way:2"
+    assert result.data.venue_type == "outdoor"
 
 
 def test_provider_name_with_extra_viewpoint_words_is_not_the_landmark(monkeypatch):
@@ -241,6 +242,22 @@ def test_photon_and_overpass_identity_deduplicates_before_scheduling(monkeypatch
     assert resolved.data.provider_id == overpass.provider_id
     activities = assign_activities("City", 2, [resolved], ToolResult.ok("Overpass", [overpass]))
     assert len(activities) == 1
+
+
+def test_island_candidates_are_outdoor_but_not_road_route_stops():
+    candidate = places._place_from_element(
+        {
+            "type": "relation",
+            "id": 42,
+            "center": {"lat": 37.8267, "lon": -122.4227},
+            "tags": {"name": "Alcatraz Island", "natural": "islet"},
+        },
+        "attraction",
+    )
+
+    assert candidate is not None
+    assert candidate.venue_type == "outdoor"
+    assert candidate.route_eligible is False
 
 
 def test_distant_same_name_candidates_are_reported_as_ambiguous(monkeypatch):
