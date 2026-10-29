@@ -118,6 +118,48 @@ def test_provider_official_short_name_can_match_canonical_landmark(monkeypatch):
     assert result.data.description == "Petronas Towers"
 
 
+def test_explicit_landmark_type_wins_over_same_name_road_segments(monkeypatch):
+    """Large landmarks can be split into several OSM ways with one name."""
+
+    monkeypatch.setattr(
+        places,
+        "HTTP_CLIENT",
+        PhotonClient(
+            {
+                "features": [
+                    feature(
+                        "Golden Gate Bridge",
+                        "highway",
+                        "motorway",
+                        longitude=-122.4759,
+                        latitude=37.8074,
+                        identity=1,
+                    ),
+                    feature(
+                        "Golden Gate Bridge",
+                        "bridge",
+                        "yes",
+                        longitude=-122.4782,
+                        latitude=37.8167,
+                        identity=2,
+                    ),
+                ]
+            }
+        ),
+    )
+
+    result = places.resolve_preference_place(
+        "Golden Gate Bridge",
+        "Golden Gate Bridge San Francisco",
+        GeoPoint(latitude=37.77493, longitude=-122.41942),
+        place_name="Golden Gate Bridge",
+        place_type="landmark",
+    )
+
+    assert result.status == "ok"
+    assert result.data.provider_id == "way:2"
+
+
 def test_provider_name_with_extra_viewpoint_words_is_not_the_landmark(monkeypatch):
     monkeypatch.setattr(
         places,

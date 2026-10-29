@@ -42,7 +42,7 @@ def resolve_preference_place(
         queries = list(dict.fromkeys(query for query in (search_query, place_name) if query))
         identity_names = [name for name in (place_name, label, search_query) if name]
         error_code = "not_found"
-        relevant: list[tuple[int, dict]] = []
+        relevant: list[tuple[int, int, dict]] = []
         for query in queries[:2]:
             params: dict[str, object] = {"q": query, "limit": 5, "lang": "en"}
             if destination_point is not None:
@@ -77,7 +77,9 @@ def resolve_preference_place(
                     if not _matches_place_type(properties, place_type):
                         error_code = "type_mismatch"
                         continue
-                    relevant.append((match_score, item))
+                    relevant.append(
+                        (match_score, _place_type_score(properties, place_type), item)
+                    )
                 except (KeyError, IndexError, TypeError, ValueError):
                     error_code = "invalid_response"
             if relevant:
@@ -90,9 +92,25 @@ def resolve_preference_place(
             )
         # Prefer an exact provider name/alias over a weaker shortened-name
         # match before checking ambiguity. Never just take the nearest result.
-        best_score = max(score for score, _ in relevant)
-        candidates = [item for score, item in relevant if score == best_score]
-        if any(_distance_km(_feature_point(candidates[0]), _feature_point(item)) > 1 for item in candidates[1:]):
+        best_identity_score = max(score for score, _, _ in relevant)
+        identity_candidates = [
+            (type_score, item)
+            for score, type_score, item in relevant
+            if score == best_identity_score
+        ]
+        # A large OSM feature may be represented by several ways: a bridge can
+        # appear once as ``bridge=yes`` and again as road segments. Prefer the
+        # explicit landmark representation before applying ambiguity checks.
+        best_type_score = max(type_score for type_score, _ in identity_candidates)
+        candidates = [
+            item
+            for type_score, item in identity_candidates
+            if type_score == best_type_score
+        ]
+        if any(
+            _distance_km(_feature_point(candidates[0]), _feature_point(item)) > 1
+            for item in candidates[1:]
+        ):
             return ToolResult[PlaceCandidate].unavailable(
                 "Photon", "ambiguous_place", f"Several distant places share this name; the exact location must be confirmed: {label}",
                 attribution=OSM_ATTRIBUTION,
@@ -209,6 +227,28 @@ def _matches_place_type(properties: dict, expected: PlaceType) -> bool:
     # Unknown metadata cannot prove a specific category. For broad landmark
     # requests, prevent a same-named business or housing development replacing it.
     return value not in {"restaurant", "cafe", "fast_food", "hotel", "hostel", "residential"}
+
+
+def _place_type_score(properties: dict, expected: PlaceType) -> int:
+    """Rank explicit provider types before treating same-name results as ambiguous."""
+
+    key, value = properties.get("osm_key"), properties.get("osm_value")
+    if expected != "landmark":
+        return 1
+    # These tags describe a landmark itself more directly than a road segment
+    # carrying the same name. The set is generic; it does not name a city or
+    # landmark and only uses provider metadata.
+    if (key, value) in {
+        ("bridge", "yes"),
+        ("tourism", "attraction"),
+        ("tourism", "viewpoint"),
+        ("historic", "monument"),
+        ("man_made", "tower"),
+    }:
+        return 2
+    if key == "highway":
+        return 0
+    return 1
 
 
 def _route_eligible(properties: dict) -> bool:
