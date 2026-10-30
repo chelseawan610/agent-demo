@@ -403,3 +403,57 @@ def test_markdown_renders_activity_operating_hours_and_duration():
     assert "about 90 min" in markdown
     assert "[website](https://example.test/tokyo-tower)" in markdown
     assert "indoor or outdoor" in markdown
+
+
+def test_markdown_follows_chinese_response_language():
+    plan = TripPlan(
+        destination="东京",
+        days=1,
+        response_language="Chinese",
+        summary="已整理东京行程。",
+        status="partial",
+        transport_modes=["driving", "transit"],
+        itinerary=[{"day": 1, "title": "第1天", "activities": []}],
+    )
+
+    markdown = render_trip_plan(plan)
+
+    assert "# 东京 — 1日旅行计划（部分数据不可用）" in markdown
+    assert "## 每日行程" in markdown
+    assert "## 交通方式" in markdown
+    assert "驾车 + 公共交通" in markdown
+    assert "## Daily itinerary" not in markdown
+    assert "## Transport" not in markdown
+    assert "> 注意：航班和酒店候选为本地演示数据" in markdown
+
+
+def test_chinese_markdown_localizes_route_mode_and_link_disclaimer():
+    plan = TripPlan(
+        destination="东京",
+        days=1,
+        response_language="Chinese",
+        summary="已整理东京行程。",
+        transport_modes=["transit"],
+        routes=[
+            {
+                "day": 1,
+                "ordered_stops": ["东京塔", "浅草寺"],
+                "distance_meters": 5900,
+                "duration_seconds": 600,
+                "profile": "transit",
+            }
+        ],
+        search_links=[
+            {
+                "service": "flights",
+                "provider": "Google Travel",
+                "url": "https://example.test/flights",
+            }
+        ],
+    )
+
+    markdown = render_trip_plan(plan)
+
+    assert "方式：公共交通" in markdown
+    assert "仅生成搜索入口，未自动读取实时价格或库存。" in markdown
+    assert "by public transit" not in markdown
