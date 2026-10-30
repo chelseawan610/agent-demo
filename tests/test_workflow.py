@@ -127,6 +127,45 @@ async def test_typed_auto_uses_small_narrative_and_keeps_tool_facts():
 
 
 @pytest.mark.asyncio
+async def test_typed_auto_replaces_mismatched_daily_title_language():
+    request = TripRequest(
+        status="ready",
+        response_language="Chinese",
+        requested_services=["activities", "guide"],
+        destination="Tokyo",
+        days=1,
+    )
+    planner = FakeAgent(
+        [
+            FakeResponse(
+                '{"summary":"已按你的偏好整理东京行程。",'
+                '"daily_titles":[{"day":1,"title":"Tokyo Day 1"}]}'
+            )
+        ]
+    )
+
+    result = await plan_trip_structured(
+        planner,
+        "compact narrative prompt",
+        mode="auto",
+        request_context=request,
+        search_results=SearchResults(
+            activities=[
+                {
+                    "destination": "Tokyo",
+                    "day": 1,
+                    "name": "Tokyo Tower",
+                    "provider_id": "tower",
+                    "verified": True,
+                }
+            ]
+        ),
+    )
+
+    assert result.itinerary[0].title == "第1天"
+
+
+@pytest.mark.asyncio
 async def test_typed_direct_uses_full_trip_plan_contract():
     request = TripRequest(
         status="ready",

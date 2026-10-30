@@ -86,6 +86,7 @@ class TripPlan(BaseModel):
     generation_source: Literal["llm", "deterministic_fallback", "offline"] = "llm"
     status: Literal["complete", "partial", "needs_clarification"] = "complete"
     destination: str
+    response_language: Literal["Chinese", "English"] = "English"
     # A flight-only request is complete without a trip horizon.  Keep the
     # field nullable instead of encoding that valid state as ``days=0``.
     days: int | None

@@ -453,6 +453,13 @@ class TripRequest(BaseModel):
                     PreferenceSpec(label=label, search_query=label)
                 )
 
+        # A typed food preference is also an explicit dining requirement. The
+        # model can preserve the detail while forgetting the matching service;
+        # keeping both in sync makes SearchPlan scope and request scope agree.
+        if any(detail.kind == "food" for detail in self.preference_details):
+            if "food" not in self.requested_services:
+                self.requested_services.append("food")
+
         self.missing_fields = list(dict.fromkeys(missing))
         self.status = "ready" if not missing else "needs_clarification"
         return self

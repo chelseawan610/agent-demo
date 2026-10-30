@@ -229,6 +229,22 @@ def test_structured_preferences_keep_user_label_and_search_query():
     assert request.preference_details[0].search_query == "Tokyo Tower Tokyo"
 
 
+def test_food_preference_adds_food_service_scope():
+    request = TripRequest(
+        destination="San Francisco",
+        requested_services=["activities", "guide"],
+        preference_details=[
+            {
+                "label": "海鲜",
+                "search_query": "seafood restaurants San Francisco",
+                "kind": "food",
+            }
+        ],
+    )
+
+    assert "food" in request.requested_services
+
+
 def test_guide_request_needs_only_destination_and_defaults_one_day():
     request = TripRequest(destination="Tokyo", requested_services=["activities", "guide"])
 

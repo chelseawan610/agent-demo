@@ -12,7 +12,7 @@ from travel_agent.schemas.narrative import TripNarrative
 from travel_agent.schemas.trip import ActivityItem, DayPlan, TripPlan
 from travel_agent.rag.models import KnowledgeCitation
 from travel_agent.validation import validate_trip_plan
-from travel_agent.workflows.prompts import split_preferences_by_outcome
+from travel_agent.workflows.prompts import infer_output_language, split_preferences_by_outcome
 
 
 class StructuredOutputError(ValueError):
@@ -183,6 +183,8 @@ def _apply_request_constraints(
     # narrative text, but it cannot change destination, duration, or budget.
     if request_context.destination is not None:
         plan.destination = request_context.destination
+    if request_context.response_language is not None:
+        plan.response_language = request_context.response_language
     requested_modes = list(request_context.transport_modes)
     if search_results is not None and search_results.route_modes:
         requested_modes = list(search_results.route_modes)
@@ -511,6 +513,20 @@ def _merge_narrative(
     )
     plan.summary = narrative.summary
     plan.generation_source = "llm"
+    # Titles are prose, but they still follow the user's language contract.
+    # If a provider returns a valid object in the wrong language, use a safe
+    # deterministic title rather than leaking a mismatched title to the user.
+    output_language = request_context.response_language
+    if output_language is not None:
+        fallback_title = "第{day}天" if output_language == "Chinese" else "Day {day}"
+        titles = {
+            day: (
+                title
+                if infer_output_language(title) == output_language
+                else fallback_title.format(day=day)
+            )
+            for day, title in titles.items()
+        }
     plan.itinerary = [
         day.model_copy(update={"title": titles.get(day.day, day.title)})
         for day in plan.itinerary
