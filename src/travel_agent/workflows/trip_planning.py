@@ -519,7 +519,7 @@ def _merge_narrative(
     output_language = request_context.response_language
     if output_language is not None:
         fallback_title = "第{day}天" if output_language == "Chinese" else "Day {day}"
-        titles = {
+        localized_titles = {
             day: (
                 title
                 if infer_output_language(title) == output_language
@@ -527,8 +527,21 @@ def _merge_narrative(
             )
             for day, title in titles.items()
         }
+        titles = localized_titles
     plan.itinerary = [
-        day.model_copy(update={"title": titles.get(day.day, day.title)})
+        day.model_copy(
+            update={
+                "title": (
+                    titles.get(day.day, day.title)
+                    if output_language is None
+                    or infer_output_language(titles.get(day.day, day.title))
+                    == output_language
+                    else ("第{day}天" if output_language == "Chinese" else "Day {day}").format(
+                        day=day.day
+                    )
+                )
+            }
+        )
         for day in plan.itinerary
     ]
     return plan
