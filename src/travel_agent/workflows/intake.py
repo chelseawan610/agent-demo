@@ -504,4 +504,6 @@ def merge_trip_requests(old: TripRequest, new: TripRequest) -> TripRequest:
     values["preference_details"] = list(details.values())
     if "requested_services" not in stated:
         values["requested_services"] = old.requested_services
+    if values.get("response_language") is None:
+        values["response_language"] = old.response_language
     return TripRequest(**values)

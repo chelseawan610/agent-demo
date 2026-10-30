@@ -20,6 +20,10 @@ def create_intake_agent(model: str | None = None) -> Agent:
         name="TripRequestParser",
         instructions=(
             "Extract travel requirements from the user's message. "
+            "Also return response_language as exactly Chinese or English. "
+            "Classify the user's prose, not the language of a place name: if the "
+            "message is mixed, choose the dominant language of the surrounding "
+            "sentence. This field controls the planner's response language. "
             "Extract a flexible requested_services list using only these values: "
             "flights, hotels, activities, guide, food. A bare intention to travel to "
             "a place (for example, 'I want to travel to a destination' or "

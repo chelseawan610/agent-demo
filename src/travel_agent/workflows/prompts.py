@@ -1,10 +1,33 @@
 """Prompt construction shared by the CLI and end-to-end evaluation."""
 
 import json
+import unicodedata
 
 from travel_agent.schemas.request import TripRequest
 from travel_agent.schemas.search import SearchPlan, SearchResults
 from travel_agent.memory.store import UserMemory
+
+
+def infer_output_language(text: str) -> str:
+    """Choose the response language from the user's script.
+
+    This is intentionally a script check, not a semantic keyword parser.  The
+    intake model still understands the request; this helper only prevents a
+    Chinese request from being rendered in the planner's default English.
+    Mixed requests containing any CJK text are treated as Chinese, which is
+    the least surprising choice for inputs such as ``从 Shanghai 去 Tokyo``.
+    """
+
+    for character in text:
+        name = unicodedata.name(character, "")
+        if (
+            "CJK UNIFIED IDEOGRAPH" in name
+            or "HIRAGANA" in name
+            or "KATAKANA" in name
+            or "HANGUL" in name
+        ):
+            return "Chinese"
+    return "English"
 
 
 def build_planner_prompt(
@@ -15,6 +38,10 @@ def build_planner_prompt(
     memory: UserMemory | None = None,
 ) -> str:
     """Build the full evidence packet used by text and legacy convert modes."""
+
+    output_language = trip_request.response_language or infer_output_language(
+        original_request
+    )
 
     memory_text = (
         "No stored preferences."
@@ -40,8 +67,8 @@ def build_planner_prompt(
         "Long-term memory (a suggestion the current request may override, not "
         "a requirement for this trip):\n"
         f"{memory_text}\n\n"
-        "Produce the final travel plan from the above alone. Write in English "
-        "whatever language the user used. Do not call tools again, do not add "
+        "Produce the final travel plan from the above alone. Write in "
+        f"{output_language}, matching the user's language. Do not call tools again, do not add "
         "a budget the user did not give. Describe preferences as fulfilled only "
         "when the tool assignment supports that claim. Do not "
         "invent exchange rates, prices or cost arithmetic. The only flights "
@@ -143,8 +170,22 @@ def build_trip_narrative_prompt(
         else []
     )
     satisfied, unsatisfied = split_preferences_by_outcome(trip_request, tool_results)
+    output_language = trip_request.response_language or infer_output_language(
+        original_request
+    )
+    route_result = tool_results.routes
+    route_evidence = {
+        "requested_modes": search_plan.route_modes,
+        "status": route_result.status if route_result is not None else "not_requested",
+        "successful_routes": (
+            [route.model_dump(mode="json") for route in (route_result.data or [])]
+            if route_result is not None and route_result.status == "ok"
+            else []
+        ),
+    }
     context = {
         "user_request": original_request,
+        "output_language": output_language,
         "trip_request": trip_request.model_dump(mode="json"),
         "search_scope": search_plan.model_dump(mode="json"),
         "verified_activity_candidates": activity_candidates,
@@ -154,6 +195,7 @@ def build_trip_narrative_prompt(
             if tool_results.weather is not None and tool_results.weather.status == "ok"
             else []
         ),
+        "route_evidence": route_evidence,
         "local_knowledge_excerpts": knowledge,
         "remembered_preferences": (
             [] if memory is None else memory.preferences[:8]
@@ -171,9 +213,8 @@ def build_trip_narrative_prompt(
     return (
         "Return exactly one TripNarrative object with only summary and daily_titles. "
         "The application will build all structured travel facts from typed tool results. "
-        "Write a concise introduction to the requested plan in English, "
-        "whatever language the user wrote in; place names may keep their local "
-        "spelling. daily_titles must be English too. "
+        f"Write a concise introduction in {output_language}, matching the user's language; "
+        "place names may keep their local spelling. daily_titles must use the same language too. "
         "Do not list or invent attractions, activities, flight or hotel details, prices, "
         "opening hours, weather, routes, bookings, or citations. Do not add facts that "
         "are not explicitly present in the context. The user's explicit preferences "
@@ -183,7 +224,9 @@ def build_trip_narrative_prompt(
         "unsatisfied_preferences; say plainly that it could not be arranged this "
         "time. Do not claim unverified_preferences were fulfilled merely because "
         "they were retained in the request. When verified_activity_candidates is empty there is no itinerary at "
-        "all, so do not describe one.\n\n"
+        "all, so do not describe one. Treat route_evidence as authoritative: when "
+        "successful_routes is empty, do not say that the plan includes, provides, "
+        "or covers a route; state that route estimates are unavailable if relevant.\n\n"
         "Context (reference only; the program owns the final facts):\n"
         f"{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}"
     )

@@ -141,6 +141,10 @@ class TripRequest(BaseModel):
         default_factory=lambda: DEFAULT_SERVICES.copy()
     )
     status: Literal["ready", "needs_clarification"] = "needs_clarification"
+    # The intake model classifies the user's prose so the planner can answer
+    # in the same language. It is optional for old checkpoints and hand-built
+    # test requests; those use the original text as a fallback.
+    response_language: Literal["Chinese", "English"] | None = None
     origin: str | None = None
     destination: str | None = None
     start_date: date | None = None

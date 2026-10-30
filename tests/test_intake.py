@@ -207,6 +207,15 @@ def test_follow_up_preserves_duration_profile_without_overwriting_new_inference(
     assert merged.duration_profile == "weekend"
 
 
+def test_follow_up_preserves_response_language():
+    old = TripRequest(destination="Tokyo", response_language="Chinese")
+    new = TripRequest(origin="Shanghai")
+
+    merged = merge_trip_requests(old, new)
+
+    assert merged.response_language == "Chinese"
+
+
 def test_structured_preferences_keep_user_label_and_search_query():
     request = TripRequest(
         destination="Tokyo",

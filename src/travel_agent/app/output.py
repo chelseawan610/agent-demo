@@ -1,8 +1,9 @@
 """User-facing rendering.
 
-Output is English. Input stays bilingual: the intake model reads Chinese or
-English, and evidence citations are matched against the user's own characters,
-so neither depends on the language this file renders in.
+The model-authored summary follows the user's Chinese or English input. The
+fixed labels and data-boundary notices in this module remain English so the
+CLI stays predictable; evidence citations are still matched against the
+user's original characters.
 """
 
 from travel_agent.schemas.trip import TripPlan
