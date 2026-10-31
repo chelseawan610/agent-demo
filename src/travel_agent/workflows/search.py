@@ -1,0 +1,684 @@
+from collections import defaultdict
+from datetime import date, datetime, timedelta, timezone
+import json
+from time import perf_counter
+from typing import Any, Callable
+
+from travel_agent.schemas.evidence import (
+    PlaceCandidate,
+    RouteSummary,
+    ToolCallRecord,
+    ToolResult,
+    infer_tool_stage,
+)
+from travel_agent.schemas.request import PreferenceSpec, TripRequest
+from travel_agent.schemas.search import (
+    ActivityQuery,
+    AttractionQuery,
+    DestinationQuery,
+    FoodQuery,
+    FlightLinkQuery,
+    FlightQuery,
+    HotelLinkQuery,
+    HotelQuery,
+    SearchPlan,
+    SearchResults,
+    WeatherQuery,
+)
+from travel_agent.tools.activities import assign_activities
+from travel_agent.tools.adapters import TravelAdapters
+from travel_agent.tools.geocoding import resolve_destination
+from travel_agent.tools.places import (
+    resolve_preference_place,
+    search_attractions,
+    search_food,
+)
+from travel_agent.tools.routing import optimize_day_route, optimize_transit_route
+from travel_agent.tools.search_links import build_flight_search_link, build_hotel_search_link
+from travel_agent.tools.weather import get_weather_forecast
+from travel_agent.rag.retriever import KnowledgeRetriever
+
+
+def _return_date(request: TripRequest) -> date | None:
+    """Use one shared date rule for flight, hotel, and route planning."""
+
+    if request.return_date:
+        return request.return_date
+    if not request.start_date:
+        return None
+    start = request.start_date
+    if request.nights is not None:
+        return start + timedelta(days=request.nights)
+    if request.days is not None:
+        return start + timedelta(days=max(request.days - 1, 0))
+    return None
+
+
+def _attraction_candidate_limit(days: int) -> int:
+    """Fetch a small, duration-aware candidate pool instead of always nine."""
+
+    return min(max(days * 2, days), 12)
+
+
+def _venue_mix_from_preferences(
+    preferences: list[PreferenceSpec],
+) -> str:
+    """Copy Intake's semantic planning hint into the executable plan.
+
+    No Chinese or English keyword matching happens here. The Intake schema is
+    the language boundary; SearchPlan only consumes its validated enum.
+    """
+
+    hints = {preference.planning_hint for preference in preferences}
+    if "venue_mix" in hints:
+        return "balanced"
+    if "indoor_only" in hints:
+        return "indoor"
+    if "outdoor_only" in hints:
+        return "outdoor"
+    return "unspecified"
+
+
+def build_search_plan(request: TripRequest) -> SearchPlan:
+    """Convert a validated request into the only allowed list of tool work."""
+
+    if request.status != "ready":
+        raise ValueError(
+            "Cannot build a SearchPlan from an incomplete TripRequest; "
+            f"still missing: {', '.join(request.missing_fields) or 'unknown fields'}"
+        )
+
+    services = set(request.requested_services)
+    days = request.days or 1
+    nights = request.nights
+    if nights is None and "hotels" in services:
+        nights = max(days - 1, 0) if request.days is not None else 1
+    plan = SearchPlan()
+    return_date = _return_date(request)
+
+    if "flights" in services and request.origin and request.destination and request.start_date:
+        plan.flight_queries.append(
+            FlightQuery(
+                origin=request.origin,
+                destination=request.destination,
+                departure_date=request.start_date,
+            )
+        )
+        round_trip = request.flight_type != "one_way"
+        if return_date and round_trip:
+            plan.flight_queries.append(
+                FlightQuery(
+                    origin=request.destination,
+                    destination=request.origin,
+                    departure_date=return_date,
+                )
+            )
+        plan.flight_link_query = FlightLinkQuery(
+            origin=request.origin,
+            destination=request.destination,
+            departure_date=request.start_date,
+            return_date=(
+                return_date if round_trip else None
+            ),
+        )
+
+    if (
+        "hotels" in services
+        and request.destination
+        and request.start_date
+        and nights is not None
+        and nights > 0
+    ):
+        check_out = request.start_date + timedelta(days=nights)
+        plan.hotel_query = HotelQuery(
+            destination=request.destination,
+            nights=nights,
+            budget=request.budget,
+        )
+        plan.hotel_link_query = HotelLinkQuery(
+            destination=request.destination,
+            check_in_date=request.start_date,
+            check_out_date=check_out,
+        )
+
+    activity_scope = bool(services & {"activities", "guide"})
+    food_requested = "food" in services or any(
+        detail.kind == "food" for detail in request.preference_details
+    )
+    if (activity_scope or food_requested) and request.destination:
+        query_parts = [
+            request.destination,
+            *request.preferences,
+            *(detail.search_query for detail in request.preference_details),
+            *sorted(services),
+        ]
+        unique_parts = list(
+            dict.fromkeys(part.strip() for part in query_parts if part.strip())
+        )
+        plan.knowledge_query = " ".join(unique_parts)
+        # Retrieval scope is structured metadata, not a keyword heuristic in
+        # the intake layer. Destination-specific sections may only be used for
+        # the normalized destination; generic planning sections remain valid.
+        plan.knowledge_scope = request.destination
+    if (activity_scope or food_requested) and request.destination:
+        plan.destination_query = DestinationQuery(destination=request.destination)
+    if activity_scope and request.destination:
+        plan.attraction_query = AttractionQuery(
+            destination=request.destination,
+            days=days,
+            limit=_attraction_candidate_limit(days),
+            venue_mix=_venue_mix_from_preferences(request.preference_details),
+        )
+        plan.activity_query = ActivityQuery(
+            destination=request.destination,
+            days=days,
+            start_date=request.start_date,
+            preferences=request.preferences,
+            preference_details=request.preference_details,
+            venue_mix=_venue_mix_from_preferences(request.preference_details),
+        )
+        plan.route_enabled = True
+        plan.route_modes = list(request.transport_modes)
+        plan.route_mode = request.transport_mode or "driving"
+        if request.start_date:
+            plan.weather_query = WeatherQuery(start_date=request.start_date, days=days)
+    if food_requested and request.destination:
+        plan.food_query = FoodQuery(
+            destination=request.destination,
+            days=days,
+            limit=min(max(days * 2, days), 12),
+            preferences=[
+                detail.label
+                for detail in request.preference_details
+                if detail.kind == "food"
+            ],
+            preference_queries=[
+                detail.search_query
+                for detail in request.preference_details
+                if detail.kind == "food"
+            ],
+        )
+    return plan
+
+
+def _recorded_call(
+    results: SearchResults,
+    tool_name: str,
+    provider: str,
+    inputs: dict[str, object],
+    call: Callable[[], Any],
+    *,
+    run_id: str | None = None,
+    trace_id: str | None = None,
+) -> Any:
+    started_at = datetime.now(timezone.utc)
+    started = perf_counter()
+    try:
+        outcome = call()
+    except Exception as error:
+        # A provider adapter must not take down the whole workflow. Convert an
+        # unexpected adapter failure into the same typed state used for timeout,
+        # rate-limit, and invalid-response failures.
+        outcome = ToolResult.unavailable(
+            provider,
+            "unexpected_error",
+            f"{type(error).__name__}: {error}",
+        )
+    status = outcome.status if isinstance(outcome, ToolResult) else "ok"
+    error_code = outcome.error_code if isinstance(outcome, ToolResult) else None
+    stage = _tool_stage(tool_name)
+    results.tool_calls.append(
+        ToolCallRecord(
+            run_id=run_id,
+            trace_id=trace_id,
+            tool_name=tool_name,
+            started_at=started_at,
+            inputs=inputs,
+            status=status,
+            elapsed_ms=round((perf_counter() - started) * 1000, 2),
+            provider=outcome.provider if isinstance(outcome, ToolResult) else provider,
+            stage=stage,
+            error_code=error_code,
+            error_category=(
+                outcome.error_category if isinstance(outcome, ToolResult) else None
+            ),
+            retryable=(outcome.retryable if isinstance(outcome, ToolResult) else None),
+            attempts=(outcome.attempts if isinstance(outcome, ToolResult) else None),
+            cache_hit=(outcome.cache_hit if isinstance(outcome, ToolResult) else None),
+            dedupe_key=_dedupe_key(tool_name, inputs),
+            message=outcome.message if isinstance(outcome, ToolResult) else None,
+        )
+    )
+    return outcome
+
+
+def _tool_stage(tool_name: str) -> str:
+    """Assign a stable workflow layer to every tool event."""
+    return infer_tool_stage(tool_name)
+
+
+def _dedupe_key(tool_name: str, inputs: dict[str, object]) -> str:
+    """Create a stable, redacted key for duplicate-call analysis."""
+
+    payload = json.dumps(inputs, ensure_ascii=False, sort_keys=True, default=str)
+    return f"{tool_name}:{payload}"
+
+
+def _record_skipped(
+    results: SearchResults,
+    tool_name: str,
+    provider: str,
+    inputs: dict[str, object],
+    *,
+    run_id: str | None = None,
+    trace_id: str | None = None,
+) -> None:
+    results.tool_calls.append(
+        ToolCallRecord(
+            run_id=run_id,
+            trace_id=trace_id,
+            tool_name=tool_name,
+            started_at=datetime.now(timezone.utc),
+            inputs=inputs,
+            status="skipped",
+            elapsed_ms=0,
+            provider=provider,
+            stage=_tool_stage(tool_name),
+            error_code="skipped_dependency",
+            error_category="workflow_dependency",
+            retryable=False,
+            dedupe_key=_dedupe_key(tool_name, inputs),
+        )
+    )
+
+
+def execute_search_plan(
+    plan: SearchPlan,
+    *,
+    adapters: TravelAdapters | None = None,
+    knowledge_retriever: KnowledgeRetriever | None = None,
+    run_id: str | None = None,
+    trace_id: str | None = None,
+) -> SearchResults:
+    """Execute a bounded plan in dependency order and preserve partial results."""
+
+    results = SearchResults(route_modes=plan.route_modes)
+    adapters = adapters or TravelAdapters.demo()
+
+    if plan.knowledge_query and knowledge_retriever is not None:
+        inputs = {
+            "query": plan.knowledge_query,
+            "scope": plan.knowledge_scope,
+            "top_k": plan.knowledge_top_k,
+            "max_chars": plan.knowledge_max_chars,
+        }
+        results.knowledge = _recorded_call(
+            results,
+            "retrieve_knowledge",
+            knowledge_retriever.provider,
+            inputs,
+            lambda: ToolResult.ok(
+                knowledge_retriever.provider,
+                knowledge_retriever.search(
+                    plan.knowledge_query,
+                    scope=plan.knowledge_scope,
+                    top_k=plan.knowledge_top_k,
+                    max_chars=plan.knowledge_max_chars,
+                ),
+            ),
+            run_id=run_id,
+            trace_id=trace_id,
+        )
+
+    for query in plan.flight_queries:
+        outcome = _recorded_call(
+            results,
+            "search_flights",
+            "local demo adapter",
+            query.model_dump(mode="json"),
+            lambda query=query: adapters.flights.search(query),
+            run_id=run_id,
+            trace_id=trace_id,
+        )
+        if isinstance(outcome, ToolResult):
+            if outcome.status == "ok" and outcome.data is not None:
+                results.flights.extend(outcome.data)
+        else:
+            results.flights.extend(outcome)
+
+    if plan.hotel_query is not None:
+        query = plan.hotel_query
+        outcome = _recorded_call(
+            results,
+            "search_hotels",
+            "local demo adapter",
+            query.model_dump(mode="json"),
+            lambda: adapters.hotels.search(query),
+            run_id=run_id,
+            trace_id=trace_id,
+        )
+        if isinstance(outcome, ToolResult):
+            if outcome.status == "ok" and outcome.data is not None:
+                results.hotels.extend(outcome.data)
+        else:
+            results.hotels.extend(outcome)
+
+    if plan.flight_link_query is not None:
+        query = plan.flight_link_query
+        outcome = _recorded_call(
+            results,
+            "build_flight_search_link",
+            "Google Travel link builder",
+            query.model_dump(mode="json"),
+            lambda: build_flight_search_link(
+                query.origin,
+                query.destination,
+                query.departure_date,
+                query.return_date,
+            ),
+            run_id=run_id,
+            trace_id=trace_id,
+        )
+        if outcome.status == "ok" and outcome.data is not None:
+            results.search_links.append(outcome.data)
+
+    if plan.hotel_link_query is not None:
+        query = plan.hotel_link_query
+        outcome = _recorded_call(
+            results,
+            "build_hotel_search_link",
+            "Google Travel link builder",
+            query.model_dump(mode="json"),
+            lambda: build_hotel_search_link(
+                query.destination, query.check_in_date, query.check_out_date
+            ),
+            run_id=run_id,
+            trace_id=trace_id,
+        )
+        if outcome.status == "ok" and outcome.data is not None:
+            results.search_links.append(outcome.data)
+
+    if plan.destination_query is None:
+        return results
+
+    destination_query = plan.destination_query
+    results.destination = _recorded_call(
+        results,
+        "resolve_destination",
+        "Open-Meteo Geocoding",
+        destination_query.model_dump(mode="json"),
+        lambda: resolve_destination(destination_query.destination),
+        run_id=run_id,
+        trace_id=trace_id,
+    )
+    destination_point = (
+        results.destination.data
+        if results.destination.status == "ok" and results.destination.data is not None
+        else None
+    )
+    if destination_point is None:
+        if plan.weather_query is not None:
+            results.weather = ToolResult.skipped(
+                "Open-Meteo Forecast", "Destination coordinates unavailable; weather skipped."
+            )
+            _record_skipped(
+                results,
+                "get_weather_forecast",
+                "Open-Meteo Forecast",
+                plan.weather_query.model_dump(mode="json"),
+                run_id=run_id,
+                trace_id=trace_id,
+            )
+        results.attractions = ToolResult.skipped(
+            "Overpass API", "Destination coordinates unavailable; attraction search skipped."
+        )
+        if plan.attraction_query is not None:
+            _record_skipped(
+                results,
+                "search_attractions",
+                "Overpass API",
+                plan.attraction_query.model_dump(mode="json"),
+                run_id=run_id,
+                trace_id=trace_id,
+            )
+
+    if plan.weather_query is not None and destination_point is not None:
+        query = plan.weather_query
+        results.weather = _recorded_call(
+            results,
+            "get_weather_forecast",
+            "Open-Meteo Forecast",
+            {**query.model_dump(mode="json"), "point": destination_point.model_dump()},
+            lambda: get_weather_forecast(
+                destination_point, query.start_date, query.days
+            ),
+            run_id=run_id,
+            trace_id=trace_id,
+        )
+
+    if plan.activity_query is not None:
+        for preference in plan.activity_query.preference_details:
+            if destination_point is None:
+                outcome = ToolResult[PlaceCandidate].skipped(
+                    "Photon",
+                    f"Destination coordinates unavailable for {preference.label}; place lookup skipped.",
+                )
+                results.preference_places.append(outcome)
+                _record_skipped(
+                    results,
+                    "resolve_preference_place",
+                    "Photon",
+                    preference.model_dump(mode="json"),
+                    run_id=run_id,
+                    trace_id=trace_id,
+                )
+                continue
+            elif preference.kind != "place":
+                # Interests such as "anime" or "food" are semantic filters,
+                # not a single map pin. Keep them as explicit unverified
+                # preferences instead of accepting an unrelated POI match.
+                outcome = ToolResult[PlaceCandidate].skipped(
+                    "Photon",
+                    f"{preference.label} is an interest, not resolved as a single place.",
+                )
+                results.preference_places.append(outcome)
+                _record_skipped(
+                    results,
+                    "resolve_preference_place",
+                    "Photon",
+                    preference.model_dump(mode="json"),
+                    run_id=run_id,
+                    trace_id=trace_id,
+                )
+                continue
+            outcome = _recorded_call(
+                results,
+                "resolve_preference_place",
+                "Photon",
+                preference.model_dump(mode="json"),
+                lambda preference=preference: resolve_preference_place(
+                    preference.label,
+                    preference.search_query,
+                    destination_point,
+                    place_name=preference.place_name,
+                    place_type=preference.place_type,
+                ),
+                run_id=run_id,
+                trace_id=trace_id,
+            )
+            results.preference_places.append(outcome)
+
+    if plan.attraction_query is not None and destination_point is not None:
+        query = plan.attraction_query
+        results.attractions = _recorded_call(
+            results,
+            "search_attractions",
+            "Overpass API",
+            query.model_dump(mode="json"),
+            lambda: search_attractions(
+                query.destination,
+                destination_point,
+                query.radius_meters,
+                query.limit,
+                venue_mix=query.venue_mix,
+            ),
+            run_id=run_id,
+            trace_id=trace_id,
+        )
+
+    if plan.food_query is not None and destination_point is not None:
+        query = plan.food_query
+        results.foods = _recorded_call(
+            results,
+            "search_food",
+            "Overpass API",
+            query.model_dump(mode="json"),
+            lambda: search_food(
+                query.destination,
+                destination_point,
+                query.radius_meters,
+                query.limit,
+                query.preferences,
+                query.preference_queries,
+            ),
+            run_id=run_id,
+            trace_id=trace_id,
+        )
+    elif plan.food_query is not None:
+        results.foods = ToolResult.skipped(
+            "Overpass API", "Destination coordinates unavailable; dining search skipped."
+        )
+        _record_skipped(
+            results,
+            "search_food",
+            "Overpass API",
+            plan.food_query.model_dump(mode="json"),
+            run_id=run_id,
+            trace_id=trace_id,
+        )
+
+    if plan.activity_query is not None:
+        day_capacities: list[int] | None = None
+        if len(plan.flight_queries) > 1:
+            # The return day is intentionally lighter. We do not know which
+            # candidate flight the user will choose, so this is a conservative
+            # planning limit rather than a claim about an exact departure time.
+            day_capacities = [2] * plan.activity_query.days
+            day_capacities[-1] = 1
+        rain_probability_by_day = None
+        if (
+            results.weather is not None
+            and results.weather.status == "ok"
+            and results.weather.data is not None
+        ):
+            rain_by_date = {
+                weather_day.date: weather_day.precipitation_probability_max
+                for weather_day in results.weather.data
+            }
+            if plan.activity_query.start_date is not None:
+                rain_probability_by_day = [
+                    rain_by_date.get(plan.activity_query.start_date + timedelta(days=offset))
+                    for offset in range(plan.activity_query.days)
+                ]
+        results.activities = assign_activities(
+            plan.activity_query.destination,
+            plan.activity_query.days,
+            results.preference_places,
+            results.attractions,
+            preference_labels=plan.activity_query.preferences,
+            preference_details=plan.activity_query.preference_details,
+            venue_mix=plan.activity_query.venue_mix,
+            start_date=plan.activity_query.start_date,
+            day_capacities=day_capacities,
+            rain_probability_by_day=rain_probability_by_day,
+        )
+
+    route_summaries: list[RouteSummary] = []
+    route_outcomes: list[ToolResult[RouteSummary]] = []
+    if plan.route_enabled:
+        activities_by_day: dict[int, list[PlaceCandidate]] = defaultdict(list)
+        for activity in results.activities:
+            activities_by_day[activity.day].append(
+                PlaceCandidate(
+                    name=activity.name,
+                    category="attraction",
+                    point=activity.point,
+                    provider_id=activity.provider_id or activity.name,
+                    source=activity.source,
+                    verified=activity.verified,
+                    route_eligible=activity.route_eligible,
+                )
+            )
+        total_days = plan.activity_query.days if plan.activity_query else 1
+        for route_mode in plan.route_modes:
+            for day_number in range(1, total_days + 1):
+                places = activities_by_day[day_number]
+                route_tool = (
+                    optimize_transit_route
+                    if route_mode == "transit"
+                    else optimize_day_route
+                )
+                route_name = (
+                    "optimize_transit_route"
+                    if route_mode == "transit"
+                    else "optimize_day_route"
+                )
+                route_provider = (
+                    "OpenTripPlanner adapter" if route_mode == "transit" else "OSRM"
+                )
+                outcome = _recorded_call(
+                    results,
+                    route_name,
+                    route_provider,
+                    {
+                        "day": day_number,
+                        "mode": route_mode,
+                        "stops": [place.name for place in places],
+                    },
+                    lambda day_number=day_number, places=places, route_tool=route_tool: route_tool(
+                        day_number, places
+                    ),
+                    run_id=run_id,
+                    trace_id=trace_id,
+                )
+                route_outcomes.append(outcome)
+                if outcome.status == "ok" and outcome.data is not None:
+                    route_summaries.append(outcome.data)
+
+    if route_summaries:
+        route_provider = " + ".join(
+            "OpenTripPlanner adapter" if mode == "transit" else "OSRM"
+            for mode in plan.route_modes
+        )
+        route_attribution = "; ".join(
+            (
+                "Routing: OpenTripPlanner/GTFS adapter"
+                if mode == "transit"
+                else "Routing: OSRM; © OpenStreetMap contributors"
+            )
+            for mode in plan.route_modes
+        )
+        results.routes = ToolResult[list[RouteSummary]].ok(
+            route_provider,
+            route_summaries,
+            attribution=route_attribution,
+        )
+    elif any(outcome.status == "unavailable" for outcome in route_outcomes):
+        results.routes = ToolResult[list[RouteSummary]].unavailable(
+            " + ".join(
+                "OpenTripPlanner adapter" if mode == "transit" else "OSRM"
+                for mode in plan.route_modes
+            ),
+            "no_routes",
+            "Some or all route adapters were unavailable.",
+        )
+    else:
+        results.routes = ToolResult[list[RouteSummary]].skipped(
+            " + ".join(
+                "OpenTripPlanner adapter" if mode == "transit" else "OSRM"
+                for mode in plan.route_modes
+            ),
+            "Fewer than two located places per day; no route was needed.",
+        )
+
+    return results

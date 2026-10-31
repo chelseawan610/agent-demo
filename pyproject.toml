@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "travel-planning-agent"
+version = "0.1.0"
+description = "A travel planning agent built with Microsoft Agent Framework."
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+
+dependencies = [
+    "agent-framework-core~=1.18.0",
+    "agent-framework-openai~=1.14.0",
+    "python-dotenv",
+    "pydantic>=2.0",
+]
+
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+mcp = [
+    "mcp>=1.0",
+]
+rag-vector = [
+    "chromadb>=1.0",
+    "sentence-transformers>=5.0",
+]
+
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-m 'not live and not llm_live and not rag_vector'"
+markers = [
+    "live: calls public no-key APIs; run explicitly with -m live",
+    "llm_live: calls the configured LLM provider; run explicitly with -m llm_live",
+    "rag_vector: downloads and runs the local embedding model; run explicitly",
+]
