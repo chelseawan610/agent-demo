@@ -25,18 +25,26 @@ For routine local evidence with less personal data, omit both sensitive flags:
       --output markdown \
       --log-file .local/runs.jsonl
 
-## Reproducible free example
+## Real LLM example
 
-The checked-in request uses the typed offline path, so it spends no model
-tokens. It still exercises SearchPlan, RAG, public travel tools, partial
-degradation, deterministic assembly, rendering, and run logging.
+The GitHub demo goes through the complete path: Intake LLM, typed TripRequest,
+SearchPlan, RAG, travel tools, Planner LLM, deterministic checks, rendering,
+and JSONL logging. It is not an offline workflow test.
 
-    PYTHONPATH=src uv run python -m travel_agent.app.cli \
-      --offline \
-      --request-json @examples/logging/request.json \
+    cat examples/logging/example-input.txt | PYTHONPATH=src uv run python -m travel_agent.app.cli \
+      --model deepseek/deepseek-v4.1-flash \
       --output json \
       --debug \
-      --log-file .local/example-run.jsonl
+      --debug-prompts \
+      --no-follow-up \
+      --log-file .local/example-llm-run.jsonl \
+      --log-input \
+      --log-content
+
+The input is stored in
+[example-input.txt](../examples/logging/example-input.txt). This command makes
+real model calls and therefore consumes provider tokens. The model can also be
+omitted here to use LLM_MODEL from .env.
 
 JSONL is append-only. Running this command again adds another row instead of
 overwriting previous evidence.
@@ -44,10 +52,10 @@ overwriting previous evidence.
 The repository includes an abridged, sanitized snapshot derived from a real
 completed model run at
 [example-run.abridged.jsonl](../examples/logging/example-run.abridged.jsonl).
-It keeps the important handoff and failure fields but intentionally omits the
-large evidence arrays. Public API results can change, so rerunning the command
-need not produce identical places or latency. The schema and authority
-boundaries should remain stable.
+It comes from a completed DeepSeek run and keeps the important handoff and
+failure fields, but intentionally omits the large evidence arrays. Model prose,
+public API results, and latency can change between runs. The schema and
+authority boundaries should remain stable.
 
 ## What one JSONL row keeps
 

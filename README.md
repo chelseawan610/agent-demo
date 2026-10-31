@@ -432,7 +432,7 @@ Schema errors, non-retryable 4xx responses, no-match results, and unconfigured
 adapters are reported directly. A valid `Retry-After` header is honored up to
 one minute.
 
-完整字段说明、免费离线复现命令和可提交到 GitHub 的 JSONL 样例见
+完整字段说明、真实 LLM 运行命令和可提交到 GitHub 的 JSONL 样例见
 [Run logging and debugging](docs/run-logging.md)。
 
 ### Run without an LLM
