@@ -6,6 +6,7 @@ JSON field names and provider identifiers stay stable English API values.
 
 from travel_agent.schemas.trip import TripPlan
 from travel_agent.schemas.request import TripRequest
+from travel_agent.workflows.prompts import infer_output_language
 
 
 DEMO_NOTICE = (
@@ -149,13 +150,21 @@ def format_plan(text: str) -> str:
     """Wrap the model response in a consistent, user-facing Markdown format."""
 
     body = text.strip()
+    language = infer_output_language(body)
+    chinese = language == "Chinese"
+    notice = _notice(language)
     if not body:
-        body = "The model did not produce a travel plan."
+        body = (
+            "模型未生成旅行计划。"
+            if chinese
+            else "The model did not produce a travel plan."
+        )
 
-    if DEMO_NOTICE not in body:
-        body = f"{body}\n\n{DEMO_NOTICE}"
+    if DEMO_NOTICE not in body and DEMO_NOTICE_ZH not in body:
+        body = f"{body}\n\n{notice}"
 
-    return f"# Travel plan\n\n{body}"
+    title = "# 旅行计划" if chinese else "# Travel plan"
+    return f"{title}\n\n{body}"
 
 
 def render_trip_plan(plan: TripPlan) -> str:

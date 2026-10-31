@@ -10,7 +10,12 @@ from travel_agent.schemas.request import (
 from travel_agent.tools.flights import search_flights
 from travel_agent.tools.hotels import search_hotels
 from travel_agent.schemas.trip import TripPlan
-from travel_agent.app.output import DEMO_NOTICE, format_plan, render_trip_plan
+from travel_agent.app.output import (
+    DEMO_NOTICE,
+    DEMO_NOTICE_ZH,
+    format_plan,
+    render_trip_plan,
+)
 
 
 def test_activity_assignment_preserves_days_and_real_sources():
@@ -318,6 +323,14 @@ def test_format_plan_does_not_duplicate_demo_notice():
     result = format_plan(f"计划\n\n{DEMO_NOTICE}")
 
     assert result.count(DEMO_NOTICE) == 1
+
+
+def test_format_plan_follows_chinese_model_output():
+    result = format_plan("东京三日行程已经整理完成。")
+
+    assert result.startswith("# 旅行计划")
+    assert DEMO_NOTICE_ZH in result
+    assert "# Travel plan" not in result
 
 
 def test_markdown_renders_typed_weather_routes_and_links():

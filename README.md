@@ -5,7 +5,8 @@ natural language and writes prose; a Python workflow decides which tools run,
 owns dates and boundaries, degrades on failure, and assembles every travel
 fact from typed tool evidence.
 
-**Input is bilingual (Chinese or English). All output is English.**
+**Input is bilingual (Chinese or English). User-facing output follows the input
+language; JSON field names remain stable English API identifiers.**
 
 ## Quickstart
 
@@ -430,6 +431,9 @@ Only timeouts, connection errors, 408/425/429, and 5xx responses are retried.
 Schema errors, non-retryable 4xx responses, no-match results, and unconfigured
 adapters are reported directly. A valid `Retry-After` header is honored up to
 one minute.
+
+完整字段说明、免费离线复现命令和可提交到 GitHub 的 JSONL 样例见
+[Run logging and debugging](docs/run-logging.md)。
 
 ### Run without an LLM
 
