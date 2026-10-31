@@ -68,9 +68,10 @@ Archived model results predate this fixture revision and are not new scores.
 
 ---
 
-以下为中文详细说明。
-
-一个基于 Microsoft Agent Framework（MAF）的单 Agent 旅行规划项目。模型负责理解自然语言和组织表达，Python workflow 负责确定工具调用、日期边界、失败降级和事实约束。
+This is a single-agent travel planner built on Microsoft Agent Framework (MAF).
+The model understands natural language and writes the user-facing narrative;
+the Python workflow chooses tools, owns date boundaries, handles degradation,
+and enforces factual constraints.
 
 ## Architecture
 
@@ -90,18 +91,64 @@ Optional quality path:
   PlannerExecutor -> ReviewerExecutor (MAF WorkflowBuilder)
 ```
 
-这个实现采用微软课程中的两类模式：
+## Feature map
 
-- [Tool Use Design Pattern](https://github.com/microsoft/ai-agents-for-beginners/blob/main/04-tool-use/README.md)：工具具有明确参数、类型和错误状态。
-- [Planning Design](https://github.com/microsoft/ai-agents-for-beginners/blob/main/07-planning-design/README.md)：先得到结构化计划，再按依赖顺序执行。
+| Capability | What it does | Default behavior |
+| --- | --- | --- |
+| Natural-language Intake | Extracts destination, origin, dates, duration, scope, budget, preferences, language, and transport modes into `TripRequest` | Uses the configured OpenAI-compatible model and Pydantic validation |
+| Clarification state machine | Asks only for hard missing fields and merges up to three answers | Runs before any travel-data tool call |
+| Typed planning | Converts `TripRequest` into a deterministic `SearchPlan` | Prevents duplicate or out-of-scope tool calls |
+| Travel retrieval | Geocoding, weather, named places, attractions, food, opening-hours metadata, and driving routes | Uses free public APIs with timeout, retry, caching, and partial degradation |
+| Flight/hotel boundary | Returns clearly labelled demo candidates and Google Travel search links | Never scrapes prices or claims a booking was made |
+| Evidence assembly | Copies tool facts into a validated `TripPlan` | The Planner cannot rewrite dates, prices, providers, or activity evidence |
+| Bilingual rendering | Produces user-facing Markdown in the input language | JSON keys stay stable English identifiers |
+| RAG | Retrieves stable travel guidance from local Markdown using BM25, vectors, or hybrid RRF | Optional; vector retrieval falls back to BM25 in hybrid mode |
+| Memory | Stores explicit user preferences in a local JSON file | Opt-in; default runs persist nothing |
+| Checkpoint | Saves and restores `intake`, `searched`, and `complete` workflow stages | Local application state, not distributed orchestration |
+| Observability | Records run IDs, trace IDs, LLM/tool events, latency, errors, tokens, and estimated cost | JSONL logging is opt-in and redacted by default |
+| Evaluation | Runs deterministic invariants, golden/held-out Intake cases, end-to-end fixtures, live API smoke tests, and optional review | Offline tests are the default CI gate |
+| MCP | Exposes read-only geocoding, weather, and RAG tools through a local STDIO server | Optional compatibility layer; the default CLI calls Python adapters directly |
 
-Planner 没有直接工具权限。所有工具调用只能来自 `SearchPlan`，因此不会出现模型无限循环调用或擅自改变日期的问题。
+## Repository map
 
-这不是“只把 prompt 写得更长”的实现：Intake 和 Planner 都通过 MAF 的
-`response_format` 进入 Pydantic 边界。正常 Planner 只输出很小的
-`TripNarrative`（摘要和每日标题）；程序随后从 `TripRequest` 与 `SearchResults`
-确定性组装完整 `TripPlan`。航班、酒店、天气、地点、路线、来源和活动日期不允许由
-模型重写。模型负责语义理解和表达，程序负责边界、执行、失败状态和可审计记录。
+| Path | Responsibility |
+| --- | --- |
+| `src/travel_agent/agents/` | MAF Agent factories for Intake, Planner, Formatter, Reviewer, and follow-up routing |
+| `src/travel_agent/workflows/` | Intake, SearchPlan execution, Planner/evidence assembly, follow-up, checkpoint, offline, review, and MAF workflow wiring |
+| `src/travel_agent/schemas/` | Pydantic request, search, evidence, trip-plan, narrative, review, trace, and checkpoint contracts |
+| `src/travel_agent/tools/` | Provider clients, retry/caching HTTP transport, OSM/Open-Meteo/OSRM tools, search links, and supplier adapters |
+| `src/travel_agent/clients/` | OpenAI-compatible client construction and transient-error fallback wrapper |
+| `src/travel_agent/rag/` | Markdown chunking, BM25 retrieval, embedding retrieval, Chroma persistence, and hybrid fusion |
+| `src/travel_agent/memory/` | Versioned local JSON preference store |
+| `src/travel_agent/app/` | CLI, Markdown/JSON rendering, run logging, tracing, and metrics |
+| `src/travel_agent/quality.py` and `validation.py` | Deterministic workflow invariants and final-plan validation |
+| `evals/` | Intake model comparison, end-to-end model evaluation, workflow contracts, and metrics |
+| `tests/` | Offline unit/contract tests plus opt-in live, LLM-live, and vector smoke tests |
+| `knowledge/` | Local Markdown knowledge source for RAG |
+| `scripts/` | Multi-turn demos, run analysis, transcript checks, and MCP direct-vs-protocol smoke test |
+| `docs/` | Design notes, RAG, preference resolution, evaluation, logging, audit, demo, and teacher-facing material |
+
+The most important boundary is `TripRequest -> SearchPlan -> SearchResults ->
+TripNarrative -> TripPlan`. The model supplies semantic interpretation and
+bounded prose; typed Python code supplies execution, facts, validation, and
+observability.
+
+The implementation follows two patterns from Microsoft's agent course:
+
+- [Tool Use Design Pattern](https://github.com/microsoft/ai-agents-for-beginners/blob/main/04-tool-use/README.md): tools have explicit parameters, types, and error states.
+- [Planning Design](https://github.com/microsoft/ai-agents-for-beginners/blob/main/07-planning-design/README.md): create a structured plan first, then execute dependencies in a controlled order.
+
+The Planner has no direct tool permissions. Every tool call must come from a
+validated `SearchPlan`, which prevents an uncontrolled model loop from changing
+dates or repeatedly calling providers.
+
+This is not a long-prompt-only implementation. Intake and Planner cross a
+Pydantic boundary through MAF `response_format`. The normal Planner returns a
+small `TripNarrative` (summary and daily titles); the program then assembles the
+complete `TripPlan` deterministically from `TripRequest` and `SearchResults`.
+Flights, hotels, weather, places, routes, sources, and activity dates cannot be
+rewritten by the model. The model handles semantic understanding and prose;
+the program owns boundaries, execution, failure states, and audit records.
 
 ## Data sources
 
@@ -121,61 +168,86 @@ Public APIs are best-effort services with no SLA. OpenStreetMap attribution must
 
 ### Activity selection and opening hours
 
-活动分配是一个确定性步骤，不交给 Planner 自由决定。流程是：
+Activity assignment is deterministic and is not delegated to the Planner:
 
-1. Intake 区分具体地点与规划约束：`place_name`/`place_type` 用于地点，`planning_hint` 用于室内外搭配等偏好。Photon 只解析具体地点，并用目的地坐标、规范名称和 OSM 类型核验候选；同名餐厅不能替代海港。
-2. 程序按候选数量和旅行天数计算每日容量，通常为 1--3 个地点，而不是固定每天三个。
-3. 如果 OSM 提供简单的 `opening_hours` 规则，程序会把计划日期为 `closed` 的地点排除；缺少或暂时无法解析的规则保留为 `unknown`，并在输出中明确标注“开放时间未核验”。
-4. 已解析的地点按天分配，并尽量让同一天的地点靠近；往返行程会给最后一天较小容量，因为返程航班时间尚未选定。
+1. Intake separates concrete places from planning constraints: `place_name` and
+   `place_type` describe a place, while `planning_hint` describes constraints
+   such as indoor/outdoor balance. Photon resolves only concrete places and
+   verifies them using destination coordinates, normalized names, and OSM types;
+   a same-name restaurant cannot replace a harbour.
+2. The program calculates daily capacity from the candidate count and trip
+   length. It normally assigns one to three places per day rather than forcing
+   exactly three.
+3. When OSM provides a simple `opening_hours` rule, places marked `closed` for
+   the planned date are excluded. Missing or unsupported rules remain
+   `unknown` and the output says that opening hours were not verified.
+4. Resolved places are assigned to days and nearby places are kept together
+   where possible. A return trip gives the final day less capacity because the
+   return flight time has not been selected.
 
-`venue_mix=balanced` 会让 Overpass 查询包含公园、花园等室外候选，并在截断结果前
-交替保留已知室内/室外候选；每天分配也使用这个约束。它不会把“室内外结合”造为
-景点。类型未知仍保持 unknown；候选不足时，最终计划标记 partial 并说明偏好尚未满足。
-具体地点要求核验完整名称（Unicode/大小写/空白规范化后），不使用名称片段猜测。
-遇到不支持的别名、类型不匹配或远距离同名候选会返回 unavailable，可能降低召回率，
-但不会接受相似商家。海港等区域的中心点保留在 JSON 中，同时标记
-`route_eligible=false`，不会被当作已核验入口传入路线计算。
-完整示例及修改位置见 [docs/preference-resolution.md](docs/preference-resolution.md)。
+`venue_mix=balanced` asks Overpass for parks, gardens, and other outdoor
+candidates and alternates known indoor/outdoor candidates before truncation.
+Daily assignment uses the same constraint. It does not invent a venue to satisfy
+an indoor/outdoor request. Unknown types remain `unknown`; if there are not
+enough candidates, the final plan is marked `partial` and explains the unmet
+constraint. Concrete place requests require a verified full name after Unicode,
+case, and whitespace normalization; substring guessing is not used. Unsupported
+aliases, type mismatches, and distant same-name results return `unavailable`
+instead of accepting a similar business. Area landmarks such as a harbour keep
+their center point in JSON but are marked `route_eligible=false`, so they are not
+passed to routing as a verified entrance. See
+[docs/preference-resolution.md](docs/preference-resolution.md) for the full
+example and implementation notes.
 
-目前只安全解析常见的每周规则，例如 `Mo-Fr 10:00-18:00`、`Mo-Su off` 和 `24/7`。
-节假日、临时闭馆和复杂的 OSM 规则不会被猜测，仍需查看官网。活动候选会保留
-`opening_hours`、`opening_status`、`website`、`estimated_visit_minutes` 等字段，
-所以 JSON 可以继续被前端或后续评估程序消费。
+Only common weekly rules such as `Mo-Fr 10:00-18:00`, `Mo-Su off`, and `24/7`
+are parsed safely. Holidays, temporary closures, and complex OSM rules are not
+guessed; users should verify them on the official website. Activity candidates
+retain `opening_hours`, `opening_status`, `website`, and
+`estimated_visit_minutes`, so JSON can be consumed by a frontend or evaluation
+program.
 
-这层逻辑刻意不把天气硬编码成“下雨就删景点”。天气是一个确定性排序信号：当预报的
-降雨概率达到 60% 且地点被 OSM 明确标成 `outdoor` 时，程序优先把它排到其它较干燥的
-旅行日；如果没有合适的日期，地点仍会保留，不会被偷偷删除。用户明确点名的地点也
-不会被天气过滤。地点现在还会保留 `venue_type`（`indoor`、`outdoor`、`mixed` 或
-`unknown`），但只有 OSM 明确提供证据时才标记，不用模型猜测。
+Weather is a deterministic ranking signal, not a hard-coded “rain means delete
+the attraction” rule. When precipitation probability reaches 60% and OSM
+explicitly marks a place as `outdoor`, the program prefers a drier travel day.
+If no better day exists, the place remains in the plan. A user-named place is
+never silently removed by weather. Places retain `venue_type` (`indoor`,
+`outdoor`, `mixed`, or `unknown`), and a type is assigned only when OSM provides
+evidence rather than model speculation.
 
 ### Dining and transport modes
 
-餐饮不是另一个 Agent，而是一个可选的 `food` service。用户明确说“推荐餐厅、吃饭、
-美食或寿司”时，Intake 才把它加入 `requested_services`，SearchPlan 才会执行
-`search_food`。这个工具复用 Overpass 的地点、营业时间、官网和 OSM attribution，
-输出的是候选餐厅，不会编造价格、评分、菜单或预订状态。用户明确给出菜系偏好时，
-程序只保留 OSM `cuisine` 标签与 provider-friendly 查询词匹配的候选；没有标签或
-没有匹配项就返回空列表并说明原因，不会把普通咖啡店冒充成寿司或拉面店。普通旅行
-请求不会因为餐饮工具而增加网络调用。
+Dining is an optional `food` service, not another Agent. Intake adds it to
+`requested_services` only when the user explicitly asks for restaurants, food,
+or a cuisine. SearchPlan then executes `search_food`. The tool reuses Overpass
+place, opening-hours, website, and OSM attribution fields. It returns restaurant
+candidates without inventing prices, ratings, menus, or booking status. When a
+cuisine is requested, the program keeps only candidates whose OSM `cuisine` tag
+matches the provider-friendly query. Missing tags or no matches produce an
+explicit empty result instead of presenting an ordinary cafe as sushi or ramen.
+Normal travel requests do not incur a dining call.
 
-路线默认使用 OSRM 的驾车估算。用户明确要求地铁或公交时，流程会保留驾车路线，并
-额外加入 `transit` 路线模式，同时调用 `optimize_transit_route`。当前它会诚实返回
-`not_configured`，因为免费的 OSRM 公共实例不是公交规划器；真正的公交路线需要
-带 GTFS 数据的 OpenTripPlanner adapter。这样接口已经保留，未来替换适配器不会改
-SearchPlan 或 TripPlan，也不会把驾车时间冒充公交时间。`transport_modes` 会明确记录
-`["driving", "transit"]`，所以一类路线失败不会抹掉另一类成功结果。
+Routes default to OSRM driving estimates. When the user asks for a metro or
+bus, the workflow preserves driving and adds a `transit` mode by calling
+`optimize_transit_route`. It currently returns `not_configured` because the
+free OSRM instance is not a transit planner; a real transit route needs an
+OpenTripPlanner adapter backed by GTFS data. The interface is already stable,
+so a future adapter will not change SearchPlan or TripPlan, and driving minutes
+will never be presented as transit time. `transport_modes` records
+`["driving", "transit"]`, so one route failure does not erase another result.
 
 ### When to split agents
 
-当前不应为景点、餐厅和路线各创建一个 Agent：它们是不同工具和数据源，不是不同的
-推理目标。额外 Agent 会带来新的上下文传递、结构化输出、重试、日志和成本，反而让
-这个 demo 难以验证。
+The project does not create separate Agents for attractions, dining, and routes:
+they are different tools and data sources, not independent reasoning goals.
+Additional Agents would add context handoffs, schemas, retries, logs, and cost,
+making the demo harder to verify.
 
-现在的合理边界是：`IntakeAgent` 负责需求结构化，确定性 Search workflow 负责工具，
-`TravelPlanner` 负责叙述，`Reviewer` 负责可选复核。只有当一个子任务拥有独立目标、
-独立工具集合、可以并行执行，并且需要单独评估时，才考虑拆成 `TransportAgent`、
-`ExperienceAgent` 等。当前代码已经把这些边界做成了 SearchPlan 和 adapter，后续
-拆 Agent 时可以复用，而不需要重写工具层。
+The current boundaries are: `IntakeAgent` for request extraction, a
+deterministic Search workflow for tools, `TravelPlanner` for narrative, and an
+optional `Reviewer`. Consider a specialist such as `TransportAgent` or
+`ExperienceAgent` only when a subtask has an independent goal and tool set, can
+run independently, and needs separate evaluation. SearchPlan and adapters
+already make those future boundaries reusable without rewriting the tool layer.
 
 Booking.com and Skyscanner scraping is intentionally not implemented because their terms prohibit unauthorized automated scraping. Real flight and hotel inventory requires a registered provider such as Amadeus or Booking Demand API; the local adapters can be replaced later without changing `TripRequest`, `SearchPlan`, or `TripPlan`.
 
@@ -233,22 +305,27 @@ the default.
 
 ## Run
 
-最简单的 Markdown 运行方式（普通用户只需要这一条）：
+The simplest Markdown run (the only command most users need) is:
 
 ```bash
 PYTHONPATH=src uv run python -m travel_agent.app.cli
 ```
 
-CLI 启动时会把标准输入、输出和错误流统一配置为 UTF-8，并在宿主终端拒绝重配置
-时安全降级，因此中文输入不会因为本地 locale 不一致直接触发编码异常。目的地也有
-一层很小的实体保护：用户明确写出首尔、东京等已知城市时，模型不能把它静默改成另一个
-城市；多个城市表达不清时会回到追问，而不会先调用错误的工具。
+The CLI configures stdin, stdout, and stderr as UTF-8 and safely falls back when
+the host terminal refuses reconfiguration. Chinese input therefore does not
+fail solely because of a local locale mismatch. A small entity guard also
+protects explicit cities: if the user writes Seoul or Tokyo, the model cannot
+silently replace it with another city. Ambiguous multi-city input returns to
+clarification before tools run.
 
-Intake 的每轮追问是无状态的：下一轮只重新读取用户原文和本轮补充，程序再合并已经确认
-的字段，不把上一轮模型 JSON 当作新的用户事实。这样可以避免一次错误解析通过 MAF session
-或追问上下文被重复强化。指令中的城市示例也使用占位词，避免示例城市成为模型的默认答案。
+Each Intake clarification round is stateless: the next round reads the
+original request and the new answer, then the program merges confirmed fields.
+The previous model JSON is not treated as a new user fact. This prevents one
+bad parse from being reinforced through an MAF session or clarification context.
+Prompt examples use placeholders so an example city cannot become a default
+answer.
 
-如果需要给程序或评测读取 JSON：
+Use JSON when another program or an evaluation script needs to consume the result:
 
 ```bash
 PYTHONPATH=src uv run python -m travel_agent.app.cli \
@@ -258,8 +335,8 @@ PYTHONPATH=src uv run python -m travel_agent.app.cli \
 Example request:
 
 ```text
-我从上海出发，2026年10月1日去东京玩三天，总预算10000元，
-我想去东京塔，还喜欢动漫。
+I am leaving from Shanghai for Tokyo on 2026-10-01 for three days.
+My total budget is CNY 10,000. I want to visit Tokyo Tower and I like anime.
 ```
 
 See [docs/demo.md](docs/demo.md) for the expected tool trace and JSON/Markdown shapes.
@@ -272,35 +349,37 @@ PYTHONPATH=src uv run python -m travel_agent.app.cli \
   --debug --output json
 ```
 
-### CLI 参数怎么选
+### Choosing CLI options
 
-普通运行不需要记住全部参数。当前参数按使用场景分组：
+Most users do not need to memorize every option. The current options are grouped
+by purpose:
 
-| 参数组 | 参数 | 用途 |
+| Group | Option | Purpose |
 | --- | --- | --- |
-| 常用 | `--output` | 选择 Markdown 或 JSON；默认 Markdown |
-| 常用 | `--mode` | 模型结构化输出策略；默认 `auto`，通常不需要改 |
-| 调试评测 | `--debug` | 查看解析后的请求、搜索计划、工具事件和检查结果 |
-| 调试评测 | `--debug-prompts` | 查看发给模型的动态消息；只用于教学和排错 |
-| 调试评测 | `--offline`、`--request-json` | 跳过 LLM，使用结构化请求测试工具 workflow |
-| 调试评测 | `--review` | 计划完成后额外运行一次只读 MAF Reviewer，会增加一次模型调用 |
-| 模型记录 | `--model` | 单次覆盖 `.env` 中的主模型，用于模型比较 |
-| 模型记录 | `--fallback-model` | 主模型发生超时、限流或 5xx 时使用备用模型 |
-| 模型记录 | `--log-file` | 把一次运行的脱敏记录追加到 JSONL |
-| 模型记录 | `--log-input`、`--log-content` | 明确要求时保存原始输入或有限模型输出；都需要 `--log-file` |
-| 本地状态 | `--memory-file` | 开启本地长期偏好 Memory；不传则不保存长期偏好 |
-| 本地状态 | `--user-id` | Memory 的用户键，默认是 `local-user` |
-| 本地状态 | `--forget-memory` | 删除当前用户的偏好；必须和 `--memory-file` 一起使用 |
-| 本地状态 | `--checkpoint-file`、`--resume` | 保存或恢复本地 workflow 阶段 |
-| RAG | `--knowledge-dir` | 指定 Markdown 知识库目录，默认 `knowledge/` |
-| RAG | `--no-rag` | 关闭本次知识检索，用于对照实验 |
-| RAG | `--rag-engine` | 选择 `hybrid`、`vector` 或 `bm25` |
-| RAG | `--rag-model`、`--rag-db-dir` | 配置向量 embedding 模型和 Chroma 目录 |
+| Common | `--output` | Select Markdown or JSON; Markdown is the default. |
+| Common | `--mode` | Select the structured-output strategy; `auto` is the default. |
+| Common | `--no-follow-up`, `--follow-up` | End after the first plan or keep a scripted follow-up loop. Interactive terminals keep follow-ups by default. |
+| Debug/evaluation | `--debug` | Show the parsed request, SearchPlan, tool events, and checks. |
+| Debug/evaluation | `--debug-prompts` | Show dynamic model messages for teaching and diagnosis. |
+| Debug/evaluation | `--offline`, `--request-json` | Skip the LLM and test the structured tool workflow with a `TripRequest` JSON object or `@path`. |
+| Debug/evaluation | `--review` | Run the read-only MAF Reviewer after planning; adds one model call. |
+| Model/trace | `--model` | Override the `.env` primary model for one run or a comparison. |
+| Model/trace | `--fallback-model` | Use a second model for transient primary-provider failures. |
+| Model/trace | `--log-file` | Append a redacted run record to JSONL. |
+| Model/trace | `--log-input`, `--log-content` | Explicitly persist the raw input or bounded model output; both need `--log-file`. |
+| Local state | `--memory-file` | Enable optional long-term preference memory. |
+| Local state | `--user-id` | Select the memory partition; defaults to `local-user`. |
+| Local state | `--forget-memory` | Delete the current user's preferences; requires `--memory-file`. |
+| Local state | `--checkpoint-file`, `--resume` | Save or restore an application workflow stage. |
+| RAG | `--knowledge-dir` | Select the Markdown knowledge directory; defaults to `knowledge/`. |
+| RAG | `--no-rag` | Disable knowledge retrieval for an A/B comparison. |
+| RAG | `--rag-engine` | Select `hybrid`, `vector`, or `bm25`. |
+| RAG | `--rag-model`, `--rag-db-dir` | Configure the embedding model and Chroma directory. |
 
-这些参数都保留，是因为它们分别支持正常运行、故障定位、评测、Memory、
-Checkpoint 和 RAG 实验；但只有 `--output` 是普通用户经常需要的参数。
-`--mode`、模型、日志、review、checkpoint 和 RAG 引擎属于开发者参数，
-不应该要求最终用户理解。
+These options exist because they support normal output, diagnosis, evaluation,
+Memory, Checkpoint, and RAG experiments. Only `--output` is commonly needed by
+an end user; mode, model, logging, review, checkpoint, and RAG options are
+developer controls.
 
 The CLI exits with code `0` for a completed plan, a partial plan, or a normal
 `needs_clarification` response. It exits with code `1` for workflow/provider
@@ -316,7 +395,8 @@ typed Python arguments from `SearchPlan`, not an unconstrained tool loop.
 Use `--model MODEL_ID` to compare a provider model for one run without editing
 `.env`, for example `--model qwen/qwen3.7-flash`.
 
-显式保存用户偏好（可选）。默认 `user_id` 是 `local-user`：
+Enable explicit preference memory (optional). The default `user_id` is
+`local-user`:
 
 ```bash
 PYTHONPATH=src uv run python -m travel_agent.app.cli \
@@ -324,8 +404,8 @@ PYTHONPATH=src uv run python -m travel_agent.app.cli \
   --output markdown
 ```
 
-如果多个用户在同一台电脑、同一个 Memory 文件中运行，需要用 `--user-id`
-覆盖默认值，避免偏好混在一起：
+When multiple users share one computer and one Memory file, override
+`--user-id` so their preferences stay separate:
 
 ```bash
 PYTHONPATH=src uv run python -m travel_agent.app.cli \
@@ -337,28 +417,32 @@ PYTHONPATH=src uv run python -m travel_agent.app.cli \
   --user-id alice
 ```
 
-`--user-id` 只是本地偏好分区键，不是登录认证。终端没有账户系统；真正的
-Web/API 应用应该由后端从登录会话得到用户 ID。`.env` 和 `.local/` 已加入
-`.gitignore`，不要把 API key、Memory、运行日志或 checkpoint 一起压缩分享。
+`--user-id` is only a local preference partition key, not authentication. The
+terminal has no account system; a real Web/API application should obtain the
+user ID from its authenticated backend session. `.env` and `.local/` are in
+`.gitignore`; do not package API keys, Memory, run logs, or checkpoints for
+sharing.
 
-memory 只保存用户明确说出的旅行偏好，例如“喜欢动漫”；Intake 的本轮追问使用
-一个 MAF `AgentSession` 保存短期上下文。它不把整段对话写入长期偏好文件，
-也不会自动训练模型。当前请求和历史偏好冲突时，当前请求优先。删除本地偏好：
+Memory stores only explicit travel preferences, such as “I like anime”. Intake
+clarification uses a short-lived MAF `AgentSession`; it does not write the full
+conversation to the long-term preference file and does not train the model.
+The current request overrides historical preferences. Delete local preferences:
 `--forget-memory --memory-file .local/memory.json --user-id local-user`。
 
-启用一次只读质量复核：
+Enable one read-only quality review:
 
 ```bash
 PYTHONPATH=src uv run python -m travel_agent.app.cli \
   --review --output json
 ```
 
-这会增加一次 `TripPlanReviewer` 模型调用，并通过 MAF `WorkflowBuilder` 的
-`PlannerExecutor -> ReviewerExecutor` 边传递 typed plan。Reviewer 只能返回
-`ReviewResult`（pass / needs_revision、问题、优点和检查项），不能改写航班、
-价格、日期或工具事实；复核服务失败时，原计划仍然保留并在 notes 中说明。
+This adds one `TripPlanReviewer` model call and passes the typed plan through the
+MAF `WorkflowBuilder` edge `PlannerExecutor -> ReviewerExecutor`. The Reviewer
+can return only a `ReviewResult` (pass / needs_revision, issues, strengths, and
+checks); it cannot rewrite flights, prices, dates, or tool facts. If review
+fails, the original plan is kept and the failure is added to `notes`.
 
-保存和恢复本地 workflow 状态：
+Save and restore local workflow state:
 
 ```bash
 PYTHONPATH=src uv run python -m travel_agent.app.cli \
@@ -368,10 +452,12 @@ PYTHONPATH=src uv run python -m travel_agent.app.cli \
   --checkpoint-file .local/checkpoint.json --resume --output markdown
 ```
 
-checkpoint 保存 `intake`、`searched`、`complete` 三个应用层阶段。`complete` 可以
-直接无模型重放；`searched` 会跳过重新解析和外部工具调用，只恢复 Planner（以及可选
-Reviewer），并保留原始用户需求。它仍然不是服务端队列，也不是 MAF 的分布式持久化。
-MAF WorkflowBuilder 当前用于 Planner→Reviewer 交接，应用层 checkpoint 继续保存完整旅行事实。
+The checkpoint stores three application stages: `intake`, `searched`, and
+`complete`. `complete` can be replayed without a model. `searched` skips intake
+and external tools and restores the Planner (and optional Reviewer) with the
+original request and evidence. This is not a server-side queue or distributed
+MAF persistence. MAF WorkflowBuilder currently handles the Planner-to-Reviewer
+handoff, while the application checkpoint stores the complete travel evidence.
 
 For an optional provider-error fallback, configure or pass a second model:
 
@@ -432,8 +518,8 @@ Schema errors, non-retryable 4xx responses, no-match results, and unconfigured
 adapters are reported directly. A valid `Retry-After` header is honored up to
 one minute.
 
-完整字段说明、真实 LLM 运行命令和可提交到 GitHub 的 JSONL 样例见
-[Run logging and debugging](docs/run-logging.md)。
+For the complete field reference, a real-LLM command, and a sanitized JSONL
+example suitable for GitHub, see [Run logging and debugging](docs/run-logging.md).
 
 ### Run without an LLM
 
@@ -459,7 +545,7 @@ shell command.
 
 - The first interactive turn explains four entry types: full trip, round-trip
   flights, hotels, and guide/activities. The user can choose a number or ignore
-  the menu and write any combination such as “机票和酒店” directly.
+  the menu and write any combination such as “flights and hotels” directly.
 - A full plan requires origin, destination, departure date, and one duration
   boundary: days, nights, or a return date.
 - Flights-only defaults to round-trip and therefore requires a return date or
@@ -477,7 +563,7 @@ shell command.
   inclusive `+1`: 2026-10-20 to 2026-10-23 resolves to 3 days. Hotel nights use
   the explicit interval when available; an explicit 3-day request without a
   return date resolves to the usual 2-night stay.
-- Dates such as `十月3号`, `10.3`, and `2026.10.3` are normalized to ISO dates. If the year is omitted, the nearest upcoming occurrence relative to the runtime date is used.
+- Dates such as `October 3`, `10.3`, and `2026.10.3` are normalized to ISO dates. If the year is omitted, the nearest upcoming occurrence relative to the runtime date is used.
 - The CLI asks at most three follow-up rounds. Every round merges earlier answers, so supplying `Shanghai` once cannot be lost later.
 - If required fields are still missing, it returns `needs_clarification` and calls no travel-data tools.
 - Required fields are computed by `TripRequest.required_missing_fields()`, not by
@@ -527,13 +613,14 @@ PYTHONPATH=src uv run pytest -q -m llm_live
 
 The offline suite covers service routing, one-way/round-trip boundaries, cross-month dates, one-day trips, three-round clarification, typed output, provider errors, partial degradation, food scope, transit-adapter degradation, weather-aware activity assignment, memory contracts, and fact constraints. The live suite covers Tokyo/Seoul/New York geocoding, Tokyo weather, Photon preferences, Overpass attractions, and OSRM routing.
 
-The current local result is `254 passed, 14 deselected`; the no-key public-API
+The current local result is `267 passed, 14 deselected`; the no-key public-API
 smoke run is `7 passed, 2 skipped` when a provider is rate-limited or
 temporarily unavailable. Public APIs have no SLA, so the default CI-style suite
 remains offline.
 
-新增的本地 contract tests 还覆盖：JSON memory 的读写、损坏文件降级、偏好边界、
-checkpoint 往返序列化，以及 reviewer 的 prompt 和 `ReviewResult` 解析。
+Additional local contract tests cover JSON Memory read/write, corrupt-file
+degradation, preference boundaries, checkpoint round-tripping, and Reviewer
+prompt and `ReviewResult` parsing.
 
 To compare intake models on the same golden cases (this calls the configured
 LLM and may consume tokens):
@@ -627,96 +714,107 @@ tests model-dependent requirement extraction.
 
 ### Model comparison and remaining work
 
-`evals/evaluate.py` 只比较 Intake 阶段：同一组中文/英文 golden 和 held-out
-输入分别交给 Qwen、DeepSeek，检查 `TripRequest` 的服务范围、日期、天数、预算、
-偏好和 ready 状态。`evals/evaluate_end_to_end.py` 再使用固定的旅行工具证据，
-检查完整的 `Intake → SearchPlan → SearchResults → Planner → TripPlan`。
-因此 Qwen 不是“接上就算成功”：它必须在相同 case 上通过结构化字段和 workflow
-invariants。模型输出的自然语言好不好另算；事实正确性由程序检查，不交给另一个
-LLM 自说自话地判定。
+`evals/evaluate.py` compares the Intake stage: the same Chinese and English
+golden and held-out inputs are sent to Qwen and DeepSeek, and the evaluator
+checks `TripRequest` service scope, dates, duration, budget, preferences, and
+readiness. `evals/evaluate_end_to_end.py` uses fixed travel evidence to check
+the complete `Intake -> SearchPlan -> SearchResults -> Planner -> TripPlan`
+path. A model is not considered successful merely because it is connected; it
+must pass the same typed-field and workflow-invariant cases. Prose quality is a
+separate question. Factual correctness is checked by the program, not delegated
+to another LLM's unsupported opinion.
 
-课程内容和当前代码的对应关系：
+Course concepts and their implementation in this repository:
 
-| 主题 | 当前实现 | 还有什么可以做 |
+| Topic | Current implementation | Possible next step |
 | --- | --- | --- |
-| Tool Use | typed adapters、`ToolResult`、调用记录、部分降级 | 接入正式航班/酒店供应商 adapter |
-| Planning | `TripRequest → SearchPlan`，固定依赖顺序；质量路径使用 MAF `WorkflowBuilder` | 将更长的执行状态映射到 MAF durable workflow |
-| Context engineering | 原始需求、typed state、证据包、有限 memory | 压缩长对话并做 context 预算监控 |
-| Memory | 可选本地 JSON 偏好记忆 | 多账户数据库或 MAF/Mem0 等长期存储 |
-| Metacognition | 可选只读 reviewer + deterministic checks | 线上反馈、回归集和人工抽检闭环 |
-| Production/eval | JSONL trace、latency/status、golden/held-out/E2E | 成本、token、成功率 dashboard |
-| Multi-agent | Intake、Planner、Formatter、Reviewer 是职责边界；Planner→Reviewer 有 MAF edge | 只有出现独立专业权限和交接需求时再拆 specialists |
+| Tool Use | Typed adapters, `ToolResult`, call records, and partial degradation | Add an official flight/hotel supplier adapter |
+| Planning | `TripRequest -> SearchPlan` with fixed dependencies; MAF `WorkflowBuilder` for the quality path | Map longer execution state to a durable MAF workflow |
+| Context engineering | Raw request, typed state, evidence bundle, and bounded Memory | Compress long conversations and monitor context budget |
+| Memory | Optional local JSON preference store | Replace it with multi-account database or MAF/Mem0 storage |
+| Metacognition | Optional read-only Reviewer plus deterministic checks | Add online feedback, regression sets, and human sampling |
+| Production/evaluation | JSONL traces, latency/status, golden/held-out/E2E suites | Add a cost, token, and success-rate dashboard |
+| Multi-agent | Intake, Planner, Formatter, and Reviewer boundaries; Planner-to-Reviewer MAF edge | Add specialists only when they have independent permissions and handoffs |
 
-目前没有必要再添加订票、支付、数据库、服务器或自由循环 multi-agent；这些会
-扩大风险和成本，不能替代当前还需要打磨的评估与真实供应商边界。
+Booking, payment, database, server deployment, and free-loop multi-agent
+execution are intentionally out of scope for this portfolio version. They
+would increase risk and cost without replacing the current priority: reliable
+evaluation and a clean boundary for real suppliers.
 
 ### Local RAG
 
-默认使用 `hybrid` RAG：Markdown 按标题和段落切块 → BM25 lexical 检索 +
-`intfloat/multilingual-e5-small` embedding 检索 → RRF 合并 → 返回带 `source`、
-`section`、`score` 的 `KnowledgeHit` → Planner 读取证据 → 程序把 citation 写入
-`TripPlan.knowledge_sources`。知识库只用于稳定的背景说明，不代替天气、地点、
-营业时间或价格工具，也不会被当作实时事实。向量依赖不可用时，`hybrid` 自动退回
-BM25；`vector` 模式则明确报错。检索还会带上目的地 scope：通用章节可以命中，
-其他章节只有在标题/正文与当前目的地匹配时才会进入上下文，避免“首尔请求命中东京
-知识”的跨目的地污染。
+The default `hybrid` RAG pipeline is: split Markdown by headings and paragraphs
+-> BM25 lexical retrieval plus `intfloat/multilingual-e5-small` embedding
+retrieval -> reciprocal-rank fusion (RRF) -> `KnowledgeHit` objects with
+`source`, `section`, and `score` -> Planner evidence -> citations in
+`TripPlan.knowledge_sources`. The knowledge base is for stable background
+guidance, not weather, places, opening hours, or prices, and it is never treated
+as real-time evidence. If vector dependencies are unavailable, `hybrid` falls
+back to BM25; `vector` reports an explicit error. Retrieval also applies a
+destination scope: generic sections may match, while destination-specific
+sections must mention the current destination to avoid cross-destination
+contamination.
 
-#### RAG 参数和模型要求
+#### RAG options and model requirements
 
-RAG 的参数分工如下：
+RAG options have separate responsibilities:
 
-| 参数 | 作用 | 默认值 | 什么时候需要改 |
+| Option | Purpose | Default | When to change it |
 | --- | --- | --- | --- |
-| `--knowledge-dir` | Markdown 知识库目录 | `knowledge` | 资料放在其他目录时 |
-| `--rag-engine` | 检索方式：`bm25`、`vector` 或 `hybrid` | `hybrid` | 零额外依赖选 `bm25`；使用 embedding 时选 `vector`/`hybrid` |
-| `--rag-model` | **embedding 模型**，把查询和文档转成向量 | `intfloat/multilingual-e5-small` | 想比较语义检索模型时 |
-| `--rag-db-dir` | Chroma 本地向量索引目录 | `.local/chroma_rag` | 换 embedding 模型或隔离知识库时 |
-| `--no-rag` | 完全关闭知识检索 | 关闭 | 调试模型/工具链路时 |
+| `--knowledge-dir` | Markdown knowledge-base directory | `knowledge` | The source files live elsewhere |
+| `--rag-engine` | `bm25`, `vector`, or `hybrid` retrieval | `hybrid` | Use `bm25` with no extra dependency; use `vector`/`hybrid` for embeddings |
+| `--rag-model` | **Embedding model** that converts queries and documents to vectors | `intfloat/multilingual-e5-small` | Compare semantic retrieval models |
+| `--rag-db-dir` | Local Chroma vector-index directory | `.local/chroma_rag` | Isolate a knowledge base or change embedding models |
+| `--no-rag` | Disable retrieval completely | Off | Debug the model/tool path in isolation |
 
-`--rag-model` 不是聊天模型参数。它必须是能被
-`sentence-transformers.SentenceTransformer` 加载的 embedding 模型名称，或者本地模型目录；
-不能填写 OpenRouter/聊天模型名，例如 `deepseek-chat`、`qwen-*`、`gpt-*`。聊天模型由
-`--model` 或 `LLM_MODEL` 负责，embedding 模型由 `--rag-model` 或
-`RAG_EMBEDDING_MODEL` 负责，两者是不同的模型用途。
+`--rag-model` is not a chat-model option. It must be an embedding model name
+loadable by `sentence-transformers.SentenceTransformer`, or a local model
+directory. Do not pass an OpenRouter/chat model such as `deepseek-chat`,
+`qwen-*`, or `gpt-*`. The chat model is selected by `--model` or `LLM_MODEL`;
+the embedding model is selected by `--rag-model` or `RAG_EMBEDDING_MODEL`.
+They serve different purposes.
 
-默认模型适合这个小型中英文旅行知识库。第一次使用 `vector`/`hybrid` 时，
-`sentence-transformers` 会从 Hugging Face 下载模型并缓存到本机；因此首次运行需要网络、
-磁盘空间和一些等待时间，但不需要 API key，也不要求 GPU。任意模型名都不会自动可用：
-模型必须公开可下载、与 Sentence Transformers 兼容，并且本机有足够资源。私有或 gated 模型
-还需要相应的 Hugging Face 登录权限。
+The default model fits this small bilingual travel knowledge base. The first
+`vector`/`hybrid` run downloads and caches it from Hugging Face, so it needs
+network access, disk space, and some startup time, but no API key or GPU. An
+arbitrary name is not automatically usable: the model must be public,
+Sentence-Transformers-compatible, and small enough for the local machine.
+Private or gated models additionally require Hugging Face credentials.
 
-先安装向量检索依赖：
+Install vector-retrieval dependencies first:
 
 ```bash
 uv sync --extra dev --extra rag-vector
 ```
 
-常用运行方式：
+Common commands:
 
 ```bash
-# 最稳妥的零额外依赖模式；--rag-model 在此模式不会参与检索
+# Lowest-dependency mode; --rag-model is not used in this mode
 PYTHONPATH=src uv run python -m travel_agent.app.cli \
   --rag-engine bm25
 
-# 使用默认 embedding 模型的混合检索
+# Hybrid retrieval with the default embedding model
 PYTHONPATH=src uv run python -m travel_agent.app.cli \
   --rag-engine hybrid \
   --rag-model intfloat/multilingual-e5-small \
   --rag-db-dir .local/chroma_rag
 
-# 更换 embedding 模型时使用新的索引目录
+# Use a new index directory when changing the embedding model
 PYTHONPATH=src uv run python -m travel_agent.app.cli \
   --rag-engine hybrid \
   --rag-model BAAI/bge-m3 \
   --rag-db-dir .local/chroma_bge_m3
 ```
 
-换模型时建议换 `--rag-db-dir`。因为不同 embedding 模型可能有不同的向量维度和空间，
-复用旧 Chroma 目录可能导致维度冲突或混用旧索引。CLI 参数优先级高于环境变量；不想每次
-输入长参数时，可以在 `.env` 中设置：
+Use a new `--rag-db-dir` when changing models. Different embedding models may
+have different dimensions and vector spaces; reusing an old Chroma directory
+can cause dimension conflicts or mix incompatible indexes. CLI options override
+environment variables. To avoid repeating long options, set them in `.env`:
 
-上面的 `BAAI/bge-m3` 只是对照实验示例，模型更大、首次下载和 CPU 推理更重；当前项目
-默认的 `intfloat/multilingual-e5-small` 更适合先跑通和课堂演示。
+`BAAI/bge-m3` above is only a comparison example. It is larger and heavier on
+first download and CPU inference; the default
+`intfloat/multilingual-e5-small` is better for first runs and classroom demos.
 
 ```dotenv
 RAG_ENGINE=hybrid
@@ -724,25 +822,29 @@ RAG_EMBEDDING_MODEL=intfloat/multilingual-e5-small
 RAG_DB_DIR=.local/chroma_rag
 ```
 
-第一次展示项目时推荐直接使用默认配置；只有要比较 embedding 模型时才显式传
-`--rag-model` 和新的 `--rag-db-dir`。
-`sentence-transformers` 在本地把 `query:` / `passage:` 转成向量，Chroma
-`PersistentClient` 把向量、原文和 metadata 保存在 `.local/chroma_rag`。首次运行会
-下载模型，CPU 可运行；不需要 embedding API key 或 GPU。`tests/test_rag.py` 覆盖 BM25、
-RRF 和降级，`tests/test_rag_vector.py` 是需要下载模型的可选 smoke test：
+For a first project demo, use the defaults and pass `--rag-model` and a new
+`--rag-db-dir` only when comparing embedding models.
+`sentence-transformers` converts `query:` and `passage:` into local vectors;
+Chroma `PersistentClient` stores vectors, source text, and metadata in
+`.local/chroma_rag`. The first run downloads the model and works on CPU; no
+embedding API key or GPU is required. `tests/test_rag.py` covers BM25, RRF, and
+degradation. `tests/test_rag_vector.py` is an optional smoke test that downloads
+the model:
 
 ```bash
 PYTHONPATH=src uv run pytest -q -m rag_vector
 ```
 
-替换 embedding 或向量数据库时，只需实现同一个
-`travel_agent.rag.retriever.KnowledgeRetriever.search()` 接口，workflow、Pydantic
-证据、citation 和 Planner 不需要改动。完整设计见 [docs/rag.md](docs/rag.md)。
+To replace the embedding model or vector database, implement the same
+`travel_agent.rag.retriever.KnowledgeRetriever.search()` interface. The
+workflow, Pydantic evidence, citations, and Planner do not change. See
+[docs/rag.md](docs/rag.md) for the complete design.
 
 ### Optional MCP read-only server
 
-MCP 是协议入口，不是另一套旅行业务逻辑。服务器复用现有地理编码、天气和 RAG
-实现，只暴露只读工具：
+MCP is a protocol boundary, not a second copy of the travel business logic. The
+server reuses the existing geocoding, weather, and RAG implementations and
+exposes read-only tools:
 
 ```bash
 uv sync --extra mcp
@@ -750,20 +852,22 @@ PYTHONPATH=src TRAVEL_KNOWLEDGE_DIR=knowledge \
   uv run python -m travel_agent.mcp_server
 ```
 
-默认 CLI 不依赖 MCP；这条命令用于 MCP Inspector 或其他支持 MCP 的 Agent 客户端。
-当前没有暴露订票、支付或写入型工具。
+The default CLI does not depend on MCP. The command is for MCP Inspector or
+another MCP-capable Agent client. Booking, payment, and write operations are
+not exposed.
 
-可以用本地 MCP Client 做一次直调对照实验：
+Run a direct-call comparison with the local MCP client:
 
 ```bash
 PYTHONPATH=src uv run python scripts/mcp_smoke.py \
   --destination Tokyo --query "Tokyo Tower"
 ```
 
-脚本会先直接调用 Python 工具，再启动本地 STDIO MCP Server，调用同名的
-`weather` 和 `search_knowledge`，比较工具发现结果、返回状态、知识 chunk ID 和
-分阶段延迟。工具的诊断日志写到 stderr，JSON 报告写到 stdout，避免污染 MCP 的
-JSON-RPC 通道。
+The script first calls the Python tools directly, then starts the local STDIO
+MCP server and calls the same `weather` and `search_knowledge` tools. It compares
+tool discovery, return status, knowledge chunk IDs, and per-stage latency.
+Diagnostic logs go to stderr and the JSON report goes to stdout so the MCP
+JSON-RPC channel is not polluted.
 
 ## Important limits
 
