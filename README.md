@@ -8,13 +8,43 @@ fact from typed tool evidence.
 **Input is bilingual (Chinese or English). User-facing output follows the input
 language; JSON field names remain stable English API identifiers.**
 
+## Why this project is worth looking at
+
+This repository is designed as an auditable agent system rather than a
+single prompt demo:
+
+- **The model is bounded by typed contracts.** Intake produces `TripRequest`,
+  the workflow produces `SearchPlan`, and the final answer is assembled from
+  typed `SearchResults`. The model cannot invent a flight, move an attraction
+  to another day, or silently change the user's city.
+- **Tool use is controlled and observable.** Public travel tools have explicit
+  adapters, retries, timeouts, caching, normalized error categories, and
+  partial degradation. A failed weather or routing provider does not erase
+  successful evidence from other providers.
+- **The project is bilingual without duplicating the workflow.** Chinese and
+  English requests use the same schemas and execution path; only the
+  user-facing narrative changes language.
+- **It is evaluated as a system.** Deterministic evidence checks, Intake
+  golden/held-out cases, end-to-end fixture evaluation, live API smoke tests,
+  optional MAF Reviewer checks, and JSONL traces make failures attributable to
+  Intake, planning, evidence, constraints, or a provider.
+- **The limits are explicit.** Flight and hotel candidates are local demo
+  data, while real public APIs are used for geocoding, weather, places, and
+  driving estimates. Search links are generated without scraping or booking.
+
 ## Quickstart
 
 ```bash
-cp .env.example .env        # set LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
+cp .env.example .env
+# Edit .env and set LLM_API_KEY. LLM_BASE_URL and LLM_MODEL have defaults.
 uv sync --extra dev
 PYTHONPATH=src uv run python -m travel_agent.app.cli
 ```
+
+The hosted LLM key is the only required credential. Open-Meteo, Photon,
+Overpass, and OSRM are public no-key services used on a best-effort basis.
+The default model is an OpenAI-compatible DeepSeek model through OpenRouter;
+change `LLM_BASE_URL` and `LLM_MODEL` for another compatible provider.
 
 Then just describe a trip, in either language:
 
@@ -22,6 +52,26 @@ Then just describe a trip, in either language:
 I want to fly from Shanghai to Kuala Lumpur on 2026-10-30 for 5 days,
 and I want to visit the Petronas Towers on day 3.
 ```
+
+### Common commands
+
+```bash
+# Human-readable Markdown (default)
+PYTHONPATH=src uv run python -m travel_agent.app.cli
+
+# Machine-readable validated TripPlan
+PYTHONPATH=src uv run python -m travel_agent.app.cli --output json
+
+# Inspect each handoff and deterministic check
+PYTHONPATH=src uv run python -m travel_agent.app.cli --debug --output json
+
+# Run one request in a script or pipe, without an interactive follow-up loop
+PYTHONPATH=src uv run python -m travel_agent.app.cli --no-follow-up
+```
+
+The first three commands still make real LLM and public-tool calls. Use
+`--offline --request-json ...` only when you want to test the typed workflow
+without Intake or a model; the offline path is explained below.
 
 ## Conversation
 
@@ -65,13 +115,6 @@ fixes, verification commands, and known limits. Intake eval fixtures use 2099
 for explicit dates so a correct past-date guard does not invalidate the test
 as time passes. Yearless-date expectations still use the next occurrence.
 Archived model results predate this fixture revision and are not new scores.
-
----
-
-This is a single-agent travel planner built on Microsoft Agent Framework (MAF).
-The model understands natural language and writes the user-facing narrative;
-the Python workflow chooses tools, owns date boundaries, handles degradation,
-and enforces factual constraints.
 
 ## Architecture
 
@@ -133,6 +176,20 @@ TripNarrative -> TripPlan`. The model supplies semantic interpretation and
 bounded prose; typed Python code supplies execution, facts, validation, and
 observability.
 
+## What a run returns
+
+| Result | Meaning | Does the workflow call travel tools? |
+| --- | --- | --- |
+| `complete` | Required trip boundaries are known and the plan was assembled | Yes, for the services requested |
+| `partial` | The plan is usable, but one or more providers were unavailable or returned no match | Yes; successful evidence is retained and failures are explicit |
+| `needs_clarification` | A hard field such as origin, destination, departure date, or duration boundary is missing | No; the CLI asks a follow-up question first |
+| Workflow failure / non-zero exit | The workflow or its input could not produce a valid `TripPlan` | Inspect `--debug` or the JSONL record; shell scripts can distinguish this from a valid result |
+
+`--output markdown` is for people. `--output json` prints the validated
+`TripPlan` for a frontend, script, or evaluation harness. A JSONL `--log-file`
+is different: it stores the broader run evidence, including the request,
+SearchPlan, tool statuses, trajectory, metrics, and failure attribution.
+
 The implementation follows two patterns from Microsoft's agent course:
 
 - [Tool Use Design Pattern](https://github.com/microsoft/ai-agents-for-beginners/blob/main/04-tool-use/README.md): tools have explicit parameters, types, and error states.
@@ -165,6 +222,16 @@ the program owns boundaries, execution, failure states, and audit records.
 | Flight/hotel candidates | Local demo adapter | None | Explicitly marked `is_live=false` |
 
 Public APIs are best-effort services with no SLA. OpenStreetMap attribution must remain visible. This project is intended for a non-commercial portfolio demo with light traffic.
+
+### Live versus demo data
+
+| Output | Current status | What the user should understand |
+| --- | --- | --- |
+| Geocoding, weather, named places, attractions, food, opening-hours metadata | Live public API adapters | Results can be empty, delayed, rate-limited, or temporarily unavailable; the status is preserved in JSON. |
+| Driving routes | Live OSRM adapter | Distance and duration are driving-road estimates, not transit directions. |
+| Flight and hotel candidates | Local `demo` adapters | Values are deterministic examples with `is_live=false`; they are never presented as inventory or bookings. |
+| Google Travel links | Link builder | The URL is a user-facing search entry point; the program does not read the page or its prices. |
+| Public transit | Adapter interface only | `not_configured` is returned until a GTFS-backed provider is installed. |
 
 ### Activity selection and opening hours
 
@@ -339,10 +406,9 @@ I am leaving from Shanghai for Tokyo on 2026-10-01 for three days.
 My total budget is CNY 10,000. I want to visit Tokyo Tower and I like anime.
 ```
 
-See [docs/demo.md](docs/demo.md) for the expected tool trace and JSON/Markdown shapes.
-
-`--debug` shows `TripRequest`, `SearchPlan`, `ToolCallRecord`, and deterministic
-workflow checks. It never prints the LLM API key:
+See [docs/demo.md](docs/demo.md) for the expected tool trace and JSON/Markdown
+shapes. `--debug` shows `TripRequest`, `SearchPlan`, `ToolCallRecord`, and
+deterministic workflow checks. It never prints the LLM API key:
 
 ```bash
 PYTHONPATH=src uv run python -m travel_agent.app.cli \
