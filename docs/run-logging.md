@@ -12,8 +12,9 @@ terminal is for a person; JSONL is evidence for debugging and evaluation.
       --log-input \
       --log-content
 
-Every completed or failed run appends one line to .local/runs.jsonl. The
-directory is gitignored because it may contain private user text. Without
+Every completed or program-handled failed run appends one line to
+.local/runs.jsonl. A forced Ctrl+C or process kill before the final write may
+leave no row. The directory is gitignored because it may contain private user text. Without
 --log-file, nothing is persisted. --log-input stores the raw user message;
 --log-content stores at most 4,000 characters of each model response. Prompts,
 hidden reasoning, and API keys are never written.
